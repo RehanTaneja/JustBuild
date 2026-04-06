@@ -3,24 +3,37 @@ from __future__ import annotations
 import json
 import time
 from contextlib import contextmanager
+# Converts dataclass->dictionary. Needed to serialize JSON
 from dataclasses import asdict
+# Type hinting for context manager
 from typing import Iterator
 
+# Use the central brain and log structure
 from .models import BuildContext, DecisionLog
+# For getting output folder path
 from .reporting import _build_root
 
+"""
+This file acts as a black box recorder + performance tracker. 
+- It looks at what happened
+- It records how long it took
+- It writes everything into a final JSON summary
+"""
 
 class BuildLogger:
-    """Structured logger for agent decisions and timing.
+    """Structured logger for agent decisions and timing which it records into BuildContext.
+    A class that implements the DecisionLogger schema.
 
     This is intentionally simple: the same interface can later send events to
     OpenTelemetry, Kafka, Datadog, or a workflow database without changing the
     agents themselves.
     """
 
+    # context is the global state (current instance of BuildContext for the project) so that logs are stored inside the system state.
     def __init__(self, context: BuildContext) -> None:
-        self.context = context
+        self.context = context 
 
+    # Creates a DecisionLog instance and appends it to context.decisions
     def log(self, agent: str, message: str, category: str, iteration: int, elapsed_ms: int) -> None:
         self.context.decisions.append(
             DecisionLog(
@@ -32,20 +45,21 @@ class BuildLogger:
             )
         )
 
+    # Wraps code and automatically logs elapsed time.
     @contextmanager
     def timed(self, agent: str, message: str, category: str, iteration: int) -> Iterator[None]:
-        started_at = time.perf_counter()
+        started_at = time.perf_counter() # Starts the timer
         try:
-            yield
+            yield # Runs code
         finally:
-            elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+            elapsed_ms = int((time.perf_counter() - started_at) * 1000) # Measures elapsed time after code execution is finished.
             self.log(agent=agent, message=message, category=category, iteration=iteration, elapsed_ms=elapsed_ms)
 
-
+# Creates a final JSON report for the entire build
 def write_build_summary(context: BuildContext) -> Path:
-    output_dir = _build_root(context)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    path = output_dir / "build_summary.json"
+    output_dir = _build_root(context) # gets base folder.
+    output_dir.mkdir(parents=True, exist_ok=True) # creates it if it doesn't exist.
+    path = output_dir / "build_summary.json" # defined file path for the output JSON summary.
     payload = {
         "product_idea": context.request.product_idea,
         "milestones": [asdict(m) for m in context.milestones],
@@ -70,3 +84,9 @@ def write_build_summary(context: BuildContext) -> Path:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     context.build_summary_path = path
     return path
+
+"""
+While agents are doing work, the BuildLogger class automatically logs and records each step into overall system BuildContext.
+Note: This is different from real-time logging as it just stores decision timestamps in memory. 
+Once agents are done with their work, the write_build_summary function creates a final JSON summary report.
+"""
