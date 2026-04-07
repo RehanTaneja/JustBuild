@@ -4,6 +4,11 @@ from .base import BaseAgent
 from ..models import FailureReport, ImplementationArtifacts
 from ..prototype import slugify, write_prototype_files
 
+"""
+Takes spec + architecture --> generates files. It writes:
+- Prototype (HTML/JS/CSS)
+- Uses slugified project directory
+"""
 
 class ImplementationAgent(BaseAgent):
     name = "implementation-agent"

@@ -5,6 +5,14 @@ import re
 from .base import BaseAgent
 from ..models import ProductSpecification
 
+"""
+Converts idea --> structured product specification. It generates:
+- requirements
+- features
+- API contracts
+- assumptions
+- missing requirements
+"""
 
 class SpecificationAgent(BaseAgent):
     name = "specification-agent"

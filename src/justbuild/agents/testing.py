@@ -5,6 +5,16 @@ from pathlib import Path
 from .base import BaseAgent
 from ..models import FailureReport, TestResult
 
+"""
+Static validation of generated files. It checks:
+- file existence
+- keyword presence in code
+It also produces:
+- TestResult
+- Failure Report
+
+This is synctactic + structural validation only.
+"""
 
 class TestingAgent(BaseAgent):
     name = "testing-agent"

@@ -3,6 +3,13 @@ from __future__ import annotations
 from .base import BaseAgent
 from ..models import ArchitecturePlan
 
+"""
+Converts spec --> system design document. It produces:
+- Folder structure
+- Service decomposition
+- DB schema (in the future, not yet)
+- tradeoffs + justification
+"""
 
 class ArchitectureAgent(BaseAgent):
     name = "architecture-agent"

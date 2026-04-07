@@ -3,6 +3,15 @@ from __future__ import annotations
 from .base import BaseAgent
 from ..models import EvaluationReport
 
+"""
+Reads context after everything is done. It produces:
+- risks
+- technical debt
+- scalability issues
+- security concerns
+
+This is basically a postmortem system.
+"""
 
 class EvaluationAgent(BaseAgent):
     name = "evaluation-agent"
