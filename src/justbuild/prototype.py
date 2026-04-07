@@ -6,12 +6,16 @@ from pathlib import Path
 
 from .models import ArchitecturePlan, ProductSpecification
 
+"""
+This file is responsible for generating a static web app for the prototype.
+"""
+
 
 def slugify(value: str) -> str:
     slug = re.sub(r"[^a-zA-Z0-9]+", "-", value.lower()).strip("-")
     return slug or "prototype"
 
-
+# Renders index.html which includes product summary API contracts, features, user stories etc. 
 def render_index_html(spec: ProductSpecification, architecture: ArchitecturePlan) -> str:
     feature_items = "\n".join(f"<li>{feature}</li>" for feature in spec.features)
     user_story_items = "\n".join(f"<li>{story}</li>" for story in spec.user_stories)
@@ -75,7 +79,7 @@ def render_index_html(spec: ProductSpecification, architecture: ArchitecturePlan
 </html>
 """
 
-
+# builds UI styling
 def render_styles_css() -> str:
     return """\
 :root {
@@ -224,7 +228,7 @@ button:hover {
 }
 """
 
-
+# Render app.js which is fake AI response generator, simulates user interaction basically.
 def render_app_js(spec: ProductSpecification) -> str:
     serialized = json.dumps(
         {
@@ -288,7 +292,7 @@ form.addEventListener("submit", (event) => {{
 }});
 """
 
-
+# writes them all together
 def write_prototype_files(base_dir: Path, spec: ProductSpecification, architecture: ArchitecturePlan) -> list[Path]:
     prototype_dir = base_dir / "prototype"
     prototype_dir.mkdir(parents=True, exist_ok=True)
