@@ -4,14 +4,19 @@ from pathlib import Path
 
 from .models import BuildContext
 
+"""
+This file is a companion for observability.py. The final function is observability.py is a raw JSON data dump.
+This file makes a human readable final report in markdown.
+"""
 
+# Decides where the final report should be saved.
 def _build_root(context: BuildContext) -> Path:
     implementation = context.implementation
-    if implementation and implementation.prototype_dir:
-        return implementation.prototype_dir.parent
-    return context.request.output_root
+    if implementation and implementation.prototype_dir: # If code was generated
+        return implementation.prototype_dir.parent # save report next to it
+    return context.request.output_root # otherwise in the user given path
 
-
+# Writes final markdown report.
 def write_final_report(context: BuildContext) -> Path:
     build_root = _build_root(context)
     build_root.mkdir(parents=True, exist_ok=True)
