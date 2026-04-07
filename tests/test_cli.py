@@ -9,6 +9,9 @@ from unittest.mock import patch
 
 from justbuild.cli import main
 
+"""
+CLI related testing here
+"""
 
 class CLITests(unittest.TestCase):
     def test_cli_outputs_machine_readable_summary(self) -> None:

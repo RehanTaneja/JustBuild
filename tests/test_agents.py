@@ -6,15 +6,21 @@ from pathlib import Path
 
 from justbuild.orchestrator import OrchestratorAgent
 
+"""
+A Python unittest file that verifies that the pipeline works end-to-end. 
+"""
 
+# Groups all tests together, basically a checklist of everything that should not break
 class MultiAgentSystemTests(unittest.TestCase):
+
+    # Main pipeline test
     def test_end_to_end_build_generates_prototype_and_summary(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
+        with tempfile.TemporaryDirectory() as tmp_dir: # Creates a fake folder which is automatically deleted after the test
             orchestrator = OrchestratorAgent(
                 product_idea="Collaborative roadmap planner for product teams",
                 output_root=Path(tmp_dir),
             )
-            context = orchestrator.run()
+            context = orchestrator.run() # Runs the full pipeline and returns the build context.
 
             self.assertIsNotNone(context.specification)
             self.assertIsNotNone(context.architecture)
@@ -42,3 +48,8 @@ class MultiAgentSystemTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+"""
+Mental Model:
+Spins up a fake project idea ---> Run the entire pipeline ---> Checks if it actually produced something real.
+"""
