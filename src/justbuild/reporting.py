@@ -39,6 +39,10 @@ def write_final_report(context: BuildContext) -> Path:
 
 - Status: {"PASS" if testing and testing.passed else "FAIL"}
 - Summary: {testing.summary if testing else "No testing summary available."}
+- Execution checks: {len(testing.execution_results) if testing else 0}
+- Schema checks: {len(testing.schema_results) if testing else 0}
+- Browser checks: {len(testing.browser_results) if testing else 0}
+- Skipped checks: {len(testing.skipped_checks) if testing else 0}
 
 ## Self-Healing
 

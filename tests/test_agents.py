@@ -26,6 +26,8 @@ class MultiAgentSystemTests(unittest.TestCase):
                 product_idea="Collaborative roadmap planner for product teams",
                 output_root=Path(tmp_dir),
                 llm_client=FakeLLMClient(responses=default_responses()),
+                node_bin="missing-node",
+                pytest_bin="missing-pytest",
             )
             context = orchestrator.run() # Runs the full pipeline and returns the build context.
 
@@ -45,6 +47,8 @@ class MultiAgentSystemTests(unittest.TestCase):
                 product_idea="Internal support copilot for operations teams",
                 output_root=Path(tmp_dir),
                 llm_client=FakeLLMClient(responses=default_responses()),
+                node_bin="missing-node",
+                pytest_bin="missing-pytest",
             ).run()
             statuses = {milestone.name: milestone.status.value for milestone in context.milestones}
             self.assertEqual(statuses["Discovery & Planning"], "completed")
@@ -60,6 +64,8 @@ class MultiAgentSystemTests(unittest.TestCase):
                 product_idea="Internal support copilot for operations teams",
                 output_root=Path(tmp_dir),
                 llm_client=FakeLLMClient(responses=["not-json"]),
+                node_bin="missing-node",
+                pytest_bin="missing-pytest",
             )
             with self.assertRaises(ValueError):
                 orchestrator.run()
@@ -79,6 +85,8 @@ class MultiAgentSystemTests(unittest.TestCase):
                 product_idea="Planning assistant",
                 output_root=Path(tmp_dir),
                 llm_client=FakeLLMClient(responses=responses),
+                node_bin="missing-node",
+                pytest_bin="missing-pytest",
             )
             context = orchestrator.run()
 
@@ -146,6 +154,8 @@ class MultiAgentSystemTests(unittest.TestCase):
                 product_idea="Planning assistant",
                 output_root=Path(tmp_dir),
                 llm_client=FakeLLMClient(responses=responses),
+                node_bin="missing-node",
+                pytest_bin="missing-pytest",
             ).run()
 
             self.assertTrue(context.testing.passed)
@@ -154,6 +164,41 @@ class MultiAgentSystemTests(unittest.TestCase):
             debugging_milestone = next(item for item in context.milestones if item.name == "Debugging")
             self.assertEqual(debugging_milestone.status.value, "completed")
             self.assertGreaterEqual(debugging_milestone.retries, 0)
+
+    def test_schema_validation_failure_triggers_debugging(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = default_responses()
+            bad_spec = base.copy()
+            bad_spec[0] = (
+                '{"title":"Collaborative roadmap planner","product_summary":"A planning workspace for product teams.",'
+                '"requirements":["Deliver a working prototype."],"features":["Feature Breakdown dashboard"],'
+                '"user_stories":["As a PM, I want to create a plan quickly."],"api_contracts":["BROKEN CONTRACT"],'
+                '"assumptions":["In-memory data is acceptable for v1."],"constraints":["Remain runnable with standard Python tooling."],'
+                '"missing_requirements":["Persona detail should be refined later."]}'
+            )
+            responses = [
+                bad_spec[0],
+                base[1],
+                base[2],
+                base[3],
+                debugging_response(failure_groups=["schema_mismatch"], priority_order=["api_contracts"]),
+                base[2],
+                base[3],
+                debugging_response(failure_groups=["schema_mismatch"], priority_order=["api_contracts"]),
+                base[4],
+            ]
+            context = OrchestratorAgent(
+                product_idea="Planning assistant",
+                output_root=Path(tmp_dir),
+                llm_client=FakeLLMClient(responses=responses),
+                node_bin="missing-node",
+                pytest_bin="missing-pytest",
+                max_retries=1,
+            ).run()
+
+            self.assertIsNotNone(context.debugging)
+            self.assertIn("schema_mismatch", context.debugging.failure_groups)
+            self.assertFalse(context.testing.passed)
 
 
 if __name__ == "__main__":

@@ -43,6 +43,9 @@ class OrchestratorAgent:
         api_key: str | None = None,
         local_model: str | None = None,
         timeout_s: int = 60,
+        enable_playwright: bool = False,
+        node_bin: str = "node",
+        pytest_bin: str = "pytest",
     ) -> None:
         self.llm = llm_client or LLMClient(
             api_key=api_key,
@@ -60,6 +63,9 @@ class OrchestratorAgent:
             llm_model=backend.model,
             llm_base_url=backend.base_url,
             llm_backend_type=backend.backend_type,
+            enable_playwright=enable_playwright,
+            node_bin=node_bin,
+            pytest_bin=pytest_bin,
         ) # Create request
         self.context = BuildContext(request=request) # Create global system context
         self.logger = BuildLogger(self.context) # Create logger

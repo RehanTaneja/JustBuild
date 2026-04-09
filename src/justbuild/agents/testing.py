@@ -1,8 +1,13 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from .base import BaseAgent
+from ..execution import (
+    run_node_validation,
+    run_playwright_validation,
+    run_pytest_validation,
+    validate_api_contracts,
+    validate_html_rendering,
+)
 from ..llm import LLMError
 from ..models import FailureReport, TestResult
 from ..prompts import TESTING_SCHEMA, testing_system_prompt, testing_user_prompt
@@ -33,6 +38,10 @@ class TestingAgent(BaseAgent):
         unit_results: list[str] = []
         integration_results: list[str] = []
         llm_checks: list[str] = []
+        execution_results: list[str] = []
+        schema_results: list[str] = []
+        browser_results: list[str] = []
+        skipped_checks: list[str] = []
         failure_reports: list[FailureReport] = []
 
         prompt = testing_user_prompt(spec, architecture)
@@ -87,6 +96,33 @@ class TestingAgent(BaseAgent):
         self._assert_contains(prototype_dir / "app.js", "Generated Response", "JS includes result rendering flow", integration_results, failure_reports)
         self._assert_contains(prototype_dir / "styles.css", ":root", "CSS theme tokens exist", integration_results, failure_reports)
 
+        html_results, html_failures = validate_html_rendering(prototype_dir / "index.html", spec.title)
+        browser_results.extend(html_results)
+        failure_reports.extend(html_failures)
+
+        contract_results, contract_failures = validate_api_contracts(spec)
+        schema_results.extend(contract_results)
+        failure_reports.extend(contract_failures)
+
+        pytest_results, pytest_skips, pytest_failures = run_pytest_validation(self.context.request.pytest_bin)
+        execution_results.extend(pytest_results)
+        skipped_checks.extend(pytest_skips)
+        failure_reports.extend(pytest_failures)
+
+        node_results, node_skips, node_failures = run_node_validation(prototype_dir, self.context.request.node_bin)
+        execution_results.extend(node_results)
+        skipped_checks.extend(node_skips)
+        failure_reports.extend(node_failures)
+
+        playwright_results, playwright_skips, playwright_failures = run_playwright_validation(
+            prototype_dir=prototype_dir,
+            expected_title=spec.title,
+            enabled=self.context.request.enable_playwright,
+        )
+        browser_results.extend(playwright_results)
+        skipped_checks.extend(playwright_skips)
+        failure_reports.extend(playwright_failures)
+
         passed = not failure_reports
         summary = "All validation checks passed." if passed else f"{len(failure_reports)} validation checks failed."
         result = TestResult(
@@ -95,6 +131,10 @@ class TestingAgent(BaseAgent):
             unit_results=unit_results,
             integration_results=integration_results,
             llm_checks=llm_checks,
+            execution_results=execution_results,
+            schema_results=schema_results,
+            browser_results=browser_results,
+            skipped_checks=skipped_checks,
             failure_reports=failure_reports,
         )
         self.context.testing = result
@@ -102,7 +142,7 @@ class TestingAgent(BaseAgent):
 
     def _assert_contains(
         self,
-        path: Path,
+        path,
         needle: str,
         success_label: str,
         successes: list[str],

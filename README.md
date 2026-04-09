@@ -35,13 +35,26 @@ Local support is endpoint-based. The project does not load model weights in-proc
 - `evaluation`: maintainability, security, and scalability assessment
 - `observability`: structured decision logging, timing, and iteration history
 
+## Testing Layer
+
+The testing layer now combines LLM-generated test planning with deterministic runtime validation:
+
+- file and content sanity checks
+- `pytest` execution for Python-side validation
+- `node` execution for generated browser JavaScript through a DOM harness
+- HTML structure validation
+- API contract schema validation
+- optional Playwright browser verification
+
 ## Run
 
 ```bash
 PYTHONPATH=src python3 -m justbuild "AI travel planner for remote teams" \
   --provider openai \
   --model gpt-4.1-mini \
-  --api-key "$JUSTBUILD_LLM_API_KEY"
+  --api-key "$JUSTBUILD_LLM_API_KEY" \
+  --pytest-bin pytest \
+  --node-bin node
 ```
 
 Generated prototypes are written to `build_output/<idea-slug>/prototype`.
@@ -67,6 +80,12 @@ export JUSTBUILD_LLM_API_KEY=your_api_key
 export JUSTBUILD_LLM_PROVIDER=openai_compatible
 export JUSTBUILD_LLM_LOCAL_MODEL=llama3
 export JUSTBUILD_LLM_BASE_URL=http://localhost:11434/v1
+```
+
+Optional browser validation:
+
+```bash
+export JUSTBUILD_ENABLE_PLAYWRIGHT=1
 ```
 
 ## Test

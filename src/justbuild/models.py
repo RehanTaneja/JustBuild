@@ -29,6 +29,9 @@ class BuildRequest:
     llm_model: str | None = None
     llm_base_url: str | None = None
     llm_backend_type: str | None = None
+    enable_playwright: bool = False
+    node_bin: str = "node"
+    pytest_bin: str = "pytest"
 
 # This is for the orchestrator to track progress, think of it as tasks.
 @dataclass(slots=True)
@@ -107,6 +110,10 @@ class TestResult:
     unit_results: list[str]
     integration_results: list[str]
     llm_checks: list[str] = field(default_factory=list)
+    execution_results: list[str] = field(default_factory=list)
+    schema_results: list[str] = field(default_factory=list)
+    browser_results: list[str] = field(default_factory=list)
+    skipped_checks: list[str] = field(default_factory=list)
     failure_reports: list[FailureReport] = field(default_factory=list)
 
 # A review that happens after testing that highlights constraints and capabilities after prototype has been built.

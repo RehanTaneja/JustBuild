@@ -27,6 +27,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base-url", default=os.getenv("JUSTBUILD_LLM_BASE_URL"), help="Base URL for provider or local OpenAI-compatible endpoint")
     parser.add_argument("--api-key", default=os.getenv("JUSTBUILD_LLM_API_KEY"), help="Cloud LLM API key")
     parser.add_argument("--local-model", default=os.getenv("JUSTBUILD_LLM_LOCAL_MODEL"), help="Local model name served by an OpenAI-compatible endpoint")
+    parser.add_argument("--enable-playwright", action="store_true", default=os.getenv("JUSTBUILD_ENABLE_PLAYWRIGHT") == "1", help="Enable optional Playwright browser validation")
+    parser.add_argument("--node-bin", default=os.getenv("JUSTBUILD_NODE_BIN", "node"), help="Node.js binary for JS runtime validation")
+    parser.add_argument("--pytest-bin", default=os.getenv("JUSTBUILD_PYTEST_BIN", "pytest"), help="Pytest binary for Python execution validation")
     return parser
 
 # This is the actual execution flow.
@@ -46,6 +49,9 @@ def main(argv: list[str] | None = None) -> int:
         product_idea=args.idea,
         output_root=output_root,
         llm_client=llm_client,
+        enable_playwright=args.enable_playwright,
+        node_bin=args.node_bin,
+        pytest_bin=args.pytest_bin,
     ) # Initializes orchestrator.
     context = orchestrator.run() # Runs the entire system.
 
@@ -56,6 +62,11 @@ def main(argv: list[str] | None = None) -> int:
             "model": context.request.llm_model,
             "base_url": context.request.llm_base_url,
             "backend_type": context.request.llm_backend_type,
+        },
+        "testing_backend": {
+            "enable_playwright": context.request.enable_playwright,
+            "node_bin": context.request.node_bin,
+            "pytest_bin": context.request.pytest_bin,
         },
         "prototype_dir": str(context.implementation.prototype_dir) if context.implementation and context.implementation.prototype_dir else None,
         "summary_path": str(context.build_summary_path) if context.build_summary_path else None,
