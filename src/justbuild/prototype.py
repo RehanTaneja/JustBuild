@@ -311,3 +311,15 @@ def write_prototype_files(base_dir: Path, spec: ProductSpecification, architectu
     for path, content in files.items():
         path.write_text(content, encoding="utf-8")
     return list(files.keys())
+
+
+def write_prototype_bundle(base_dir: Path, file_bundle: dict[str, str]) -> list[Path]:
+    prototype_dir = base_dir / "prototype"
+    prototype_dir.mkdir(parents=True, exist_ok=True)
+
+    written_files: list[Path] = []
+    for relative_name, content in file_bundle.items():
+        path = prototype_dir / relative_name
+        path.write_text(content, encoding="utf-8")
+        written_files.append(path)
+    return written_files

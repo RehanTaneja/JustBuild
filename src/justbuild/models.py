@@ -25,6 +25,10 @@ class TaskStatus(str, Enum):
 class BuildRequest:
     product_idea: str # Simple user input string like "Build a calorie logging app".
     output_root: Path # Root Path where all the files of the project will be saved.
+    llm_provider: str | None = None
+    llm_model: str | None = None
+    llm_base_url: str | None = None
+    llm_backend_type: str | None = None
 
 # This is for the orchestrator to track progress, think of it as tasks.
 @dataclass(slots=True)
@@ -44,6 +48,7 @@ class DecisionLog:
     category: str # Type like design, error, retry etc
     iteration: int # No. of iterations passed
     elapsed_ms: int # Time passed
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 # Logging for every failure for debugging.
 @dataclass(slots=True)
@@ -83,6 +88,7 @@ class ImplementationArtifacts:
     prototype_dir: Path | None = None # Path to prototype root
     generated_files: list[Path] = field(default_factory=list) # List of files generated.
     notes: list[str] = field(default_factory=list)
+    file_bundle: dict[str, str] = field(default_factory=dict)
 
 # Used by orchestrator to enable/continue/stop iteration loop: passed->proceed, else repeat.
 @dataclass(slots=True)
@@ -91,6 +97,7 @@ class TestResult:
     summary: str
     unit_results: list[str]
     integration_results: list[str]
+    llm_checks: list[str] = field(default_factory=list)
     failure_reports: list[FailureReport] = field(default_factory=list)
 
 # A review that happens after testing that highlights constraints and capabilities after prototype has been built.

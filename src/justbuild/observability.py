@@ -5,6 +5,7 @@ import time
 from contextlib import contextmanager
 # Converts dataclass->dictionary. Needed to serialize JSON
 from dataclasses import asdict
+from pathlib import Path
 # Type hinting for context manager
 from typing import Iterator
 
@@ -34,7 +35,15 @@ class BuildLogger:
         self.context = context 
 
     # Creates a DecisionLog instance and appends it to context.decisions
-    def log(self, agent: str, message: str, category: str, iteration: int, elapsed_ms: int) -> None:
+    def log(
+        self,
+        agent: str,
+        message: str,
+        category: str,
+        iteration: int,
+        elapsed_ms: int,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
         self.context.decisions.append(
             DecisionLog(
                 agent=agent,
@@ -42,6 +51,7 @@ class BuildLogger:
                 category=category,
                 iteration=iteration,
                 elapsed_ms=elapsed_ms,
+                metadata=dict(metadata or {}),
             )
         )
 
@@ -62,6 +72,12 @@ def write_build_summary(context: BuildContext) -> Path:
     path = output_dir / "build_summary.json" # defined file path for the output JSON summary.
     payload = {
         "product_idea": context.request.product_idea,
+        "llm_backend": {
+            "provider": context.request.llm_provider,
+            "model": context.request.llm_model,
+            "base_url": context.request.llm_base_url,
+            "backend_type": context.request.llm_backend_type,
+        },
         "milestones": [asdict(m) for m in context.milestones],
         "decisions": [asdict(d) for d in context.decisions],
         "iterations": context.iterations,
@@ -71,12 +87,14 @@ def write_build_summary(context: BuildContext) -> Path:
             "prototype_dir": str(context.implementation.prototype_dir) if context.implementation and context.implementation.prototype_dir else None,
             "generated_files": [str(path) for path in context.implementation.generated_files] if context.implementation else [],
             "notes": context.implementation.notes if context.implementation else [],
+            "file_bundle": context.implementation.file_bundle if context.implementation else {},
         },
         "testing": {
             "passed": context.testing.passed if context.testing else None,
             "summary": context.testing.summary if context.testing else None,
             "unit_results": context.testing.unit_results if context.testing else [],
             "integration_results": context.testing.integration_results if context.testing else [],
+            "llm_checks": context.testing.llm_checks if context.testing else [],
             "failure_reports": [asdict(report) for report in context.testing.failure_reports] if context.testing else [],
         },
         "evaluation": asdict(context.evaluation) if context.evaluation else None,

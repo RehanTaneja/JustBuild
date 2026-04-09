@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
+from .llm import LLMClient
 from .orchestrator import OrchestratorAgent
 from .prototype import slugify
 
@@ -20,6 +22,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="build_output",
         help="Directory where generated builds should be written",
     )
+    parser.add_argument("--provider", default=os.getenv("JUSTBUILD_LLM_PROVIDER"), help="LLM provider: openai, anthropic, gemini, openai_compatible")
+    parser.add_argument("--model", default=os.getenv("JUSTBUILD_LLM_MODEL"), help="Cloud LLM model identifier")
+    parser.add_argument("--base-url", default=os.getenv("JUSTBUILD_LLM_BASE_URL"), help="Base URL for provider or local OpenAI-compatible endpoint")
+    parser.add_argument("--api-key", default=os.getenv("JUSTBUILD_LLM_API_KEY"), help="Cloud LLM API key")
+    parser.add_argument("--local-model", default=os.getenv("JUSTBUILD_LLM_LOCAL_MODEL"), help="Local model name served by an OpenAI-compatible endpoint")
     return parser
 
 # This is the actual execution flow.
@@ -28,11 +35,28 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv) # Parses all the input.
 
     output_root = Path(args.output_root).resolve() # Converts string to proper file path and makes it absolute.
-    orchestrator = OrchestratorAgent(product_idea=args.idea, output_root=output_root) # Initializes orchestrator.
+    llm_client = LLMClient(
+        api_key=args.api_key,
+        local_model=args.local_model,
+        provider=args.provider,
+        model=args.model,
+        base_url=args.base_url,
+    )
+    orchestrator = OrchestratorAgent(
+        product_idea=args.idea,
+        output_root=output_root,
+        llm_client=llm_client,
+    ) # Initializes orchestrator.
     context = orchestrator.run() # Runs the entire system.
 
     payload = {
         "idea": args.idea,
+        "llm_backend": {
+            "provider": context.request.llm_provider,
+            "model": context.request.llm_model,
+            "base_url": context.request.llm_base_url,
+            "backend_type": context.request.llm_backend_type,
+        },
         "prototype_dir": str(context.implementation.prototype_dir) if context.implementation and context.implementation.prototype_dir else None,
         "summary_path": str(context.build_summary_path) if context.build_summary_path else None,
         "final_report_path": str(context.final_report_path) if context.final_report_path else None,

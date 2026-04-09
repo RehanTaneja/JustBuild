@@ -1,0 +1,151 @@
+from __future__ import annotations
+
+import json
+from typing import Any
+
+from .models import ArchitecturePlan, EvaluationReport, FailureReport, ProductSpecification
+
+
+class JSONValidationError(ValueError):
+    """Raised when an LLM response cannot be normalized into the expected schema."""
+
+
+def parse_json_object(raw_text: str) -> dict[str, Any]:
+    stripped = raw_text.strip()
+    if not stripped:
+        raise JSONValidationError("LLM returned an empty response")
+    if "```" in stripped:
+        raise JSONValidationError("LLM returned markdown fences instead of plain JSON")
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError as exc:
+        raise JSONValidationError(f"LLM returned invalid JSON: {exc.msg}") from exc
+    if not isinstance(payload, dict):
+        raise JSONValidationError("LLM response must be a JSON object")
+    return payload
+
+
+def require_keys(payload: dict[str, Any], required_keys: list[str]) -> None:
+    missing = [key for key in required_keys if key not in payload]
+    if missing:
+        raise JSONValidationError(f"LLM response is missing required keys: {', '.join(missing)}")
+
+
+def normalize_text(value: Any, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise JSONValidationError(f"Field '{field_name}' must be a non-empty string")
+    return value.strip()
+
+
+def normalize_string_list(value: Any, field_name: str) -> list[str]:
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        raise JSONValidationError(f"Field '{field_name}' must be a list of strings")
+    normalized: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise JSONValidationError(f"Field '{field_name}' must contain only non-empty strings")
+        normalized.append(item.strip())
+    return normalized
+
+
+def build_failure_report(source: str, summary: str, details: list[str]) -> FailureReport:
+    return FailureReport(source=source, summary=summary, details=details)
+
+
+def parse_product_specification(raw_text: str) -> ProductSpecification:
+    payload = parse_json_object(raw_text)
+    require_keys(
+        payload,
+        [
+            "title",
+            "product_summary",
+            "requirements",
+            "features",
+            "user_stories",
+            "api_contracts",
+            "assumptions",
+            "constraints",
+            "missing_requirements",
+        ],
+    )
+    return ProductSpecification(
+        title=normalize_text(payload["title"], "title"),
+        product_summary=normalize_text(payload["product_summary"], "product_summary"),
+        requirements=normalize_string_list(payload["requirements"], "requirements"),
+        features=normalize_string_list(payload["features"], "features"),
+        user_stories=normalize_string_list(payload["user_stories"], "user_stories"),
+        api_contracts=normalize_string_list(payload["api_contracts"], "api_contracts"),
+        assumptions=normalize_string_list(payload["assumptions"], "assumptions"),
+        constraints=normalize_string_list(payload["constraints"], "constraints"),
+        missing_requirements=normalize_string_list(payload["missing_requirements"], "missing_requirements"),
+    )
+
+
+def parse_architecture_plan(raw_text: str) -> ArchitecturePlan:
+    payload = parse_json_object(raw_text)
+    require_keys(
+        payload,
+        ["summary", "folder_structure", "services", "database_schema", "design_tradeoffs", "justification"],
+    )
+    return ArchitecturePlan(
+        summary=normalize_text(payload["summary"], "summary"),
+        folder_structure=normalize_string_list(payload["folder_structure"], "folder_structure"),
+        services=normalize_string_list(payload["services"], "services"),
+        database_schema=normalize_string_list(payload["database_schema"], "database_schema"),
+        design_tradeoffs=normalize_string_list(payload["design_tradeoffs"], "design_tradeoffs"),
+        justification=normalize_string_list(payload["justification"], "justification"),
+    )
+
+
+def parse_implementation_bundle(raw_text: str) -> tuple[list[str], dict[str, str]]:
+    payload = parse_json_object(raw_text)
+    require_keys(payload, ["notes", "files"])
+    notes = normalize_string_list(payload["notes"], "notes")
+    files_value = payload["files"]
+    if not isinstance(files_value, dict):
+        raise JSONValidationError("Field 'files' must be an object")
+
+    required_files = ["index.html", "styles.css", "app.js", "README.md"]
+    file_bundle: dict[str, str] = {}
+    for file_name in required_files:
+        if file_name not in files_value:
+            raise JSONValidationError(f"Implementation bundle is missing file '{file_name}'")
+        file_bundle[file_name] = normalize_text(files_value[file_name], f"files.{file_name}")
+    return notes, file_bundle
+
+
+def parse_testing_plan(raw_text: str) -> tuple[list[str], list[str], list[str]]:
+    payload = parse_json_object(raw_text)
+    require_keys(payload, ["unit_checks", "integration_checks", "failure_focus"])
+    return (
+        normalize_string_list(payload["unit_checks"], "unit_checks"),
+        normalize_string_list(payload["integration_checks"], "integration_checks"),
+        normalize_string_list(payload["failure_focus"], "failure_focus"),
+    )
+
+
+def parse_evaluation_report(raw_text: str) -> EvaluationReport:
+    payload = parse_json_object(raw_text)
+    require_keys(
+        payload,
+        [
+            "code_quality",
+            "maintainability",
+            "scalability_risks",
+            "security_concerns",
+            "refactoring_opportunities",
+            "technical_debt",
+            "risk_assessment",
+        ],
+    )
+    return EvaluationReport(
+        code_quality=normalize_string_list(payload["code_quality"], "code_quality"),
+        maintainability=normalize_string_list(payload["maintainability"], "maintainability"),
+        scalability_risks=normalize_string_list(payload["scalability_risks"], "scalability_risks"),
+        security_concerns=normalize_string_list(payload["security_concerns"], "security_concerns"),
+        refactoring_opportunities=normalize_string_list(payload["refactoring_opportunities"], "refactoring_opportunities"),
+        technical_debt=normalize_string_list(payload["technical_debt"], "technical_debt"),
+        risk_assessment=normalize_string_list(payload["risk_assessment"], "risk_assessment"),
+    )

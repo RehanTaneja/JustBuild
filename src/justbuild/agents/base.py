@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ..llm import LLMClient
 from ..models import BuildContext
 from ..observability import BuildLogger
 
@@ -10,6 +11,7 @@ from ..observability import BuildLogger
 class AgentDependencies:
     context: BuildContext
     logger: BuildLogger
+    llm: LLMClient
 
 
 class BaseAgent:
@@ -25,3 +27,7 @@ class BaseAgent:
     @property
     def logger(self) -> BuildLogger:
         return self.deps.logger
+
+    @property
+    def llm(self) -> LLMClient:
+        return self.deps.llm
