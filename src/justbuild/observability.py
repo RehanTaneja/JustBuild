@@ -97,6 +97,7 @@ def write_build_summary(context: BuildContext) -> Path:
             "llm_checks": context.testing.llm_checks if context.testing else [],
             "failure_reports": [asdict(report) for report in context.testing.failure_reports] if context.testing else [],
         },
+        "debugging": asdict(context.debugging) if context.debugging else None,
         "evaluation": asdict(context.evaluation) if context.evaluation else None,
     }
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

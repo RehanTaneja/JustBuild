@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .models import ArchitecturePlan, EvaluationReport, FailureReport, ProductSpecification
+from .models import ArchitecturePlan, EvaluationReport, FailureReport, FixPlan, ProductSpecification
 
 
 class JSONValidationError(ValueError):
@@ -148,4 +148,32 @@ def parse_evaluation_report(raw_text: str) -> EvaluationReport:
         refactoring_opportunities=normalize_string_list(payload["refactoring_opportunities"], "refactoring_opportunities"),
         technical_debt=normalize_string_list(payload["technical_debt"], "technical_debt"),
         risk_assessment=normalize_string_list(payload["risk_assessment"], "risk_assessment"),
+    )
+
+
+def parse_fix_plan(raw_text: str) -> FixPlan:
+    payload = parse_json_object(raw_text)
+    require_keys(
+        payload,
+        ["file_changes", "root_cause", "strategy", "failure_groups", "priority_order"],
+    )
+    failure_groups = normalize_string_list(payload["failure_groups"], "failure_groups")
+    allowed_groups = {
+        "missing_file",
+        "logic_error",
+        "schema_mismatch",
+        "content_mismatch",
+        "llm_output_invalid",
+    }
+    invalid_groups = [group for group in failure_groups if group not in allowed_groups]
+    if invalid_groups:
+        raise JSONValidationError(
+            f"Field 'failure_groups' contains invalid values: {', '.join(invalid_groups)}"
+        )
+    return FixPlan(
+        file_changes=normalize_string_list(payload["file_changes"], "file_changes"),
+        root_cause=normalize_text(payload["root_cause"], "root_cause"),
+        strategy=normalize_text(payload["strategy"], "strategy"),
+        failure_groups=failure_groups,
+        priority_order=normalize_string_list(payload["priority_order"], "priority_order"),
     )

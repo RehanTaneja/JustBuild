@@ -6,12 +6,13 @@ from pathlib import Path
 
 from .agents.architecture import ArchitectureAgent
 from .agents.base import AgentDependencies
+from .agents.debugging import DebuggingAgent
 from .agents.evaluation import EvaluationAgent
 from .agents.implementation import ImplementationAgent
 from .agents.specification import SpecificationAgent
 from .agents.testing import TestingAgent
 from .llm import LLMClient
-from .models import BuildContext, BuildRequest, FailureReport, Milestone, TaskStatus
+from .models import BuildContext, BuildRequest, FailureReport, FixPlan, Milestone, TaskStatus
 from .observability import BuildLogger, write_build_summary
 from .reporting import write_final_report
 
@@ -68,6 +69,7 @@ class OrchestratorAgent:
         self.architecture_agent = ArchitectureAgent(deps)
         self.implementation_agent = ImplementationAgent(deps)
         self.testing_agent = TestingAgent(deps)
+        self.debugging_agent = DebuggingAgent(deps)
         self.evaluation_agent = EvaluationAgent(deps)
         self.max_retries = max_retries
         self._create_milestones()
@@ -114,6 +116,7 @@ class OrchestratorAgent:
                 self._update_milestone("Architecture", TaskStatus.COMPLETED)
 
         failure_reports = []
+        fix_plan: FixPlan | None = None
         for attempt in range(1, self.max_retries + 2): # Phase 4 Implementation Loop
             iteration_log = {"iteration": attempt, "events": []}
             self.context.iterations.append(iteration_log)
@@ -124,11 +127,16 @@ class OrchestratorAgent:
                     implementation = self._run_with_failure_capture(
                         milestone_name="Implementation",
                         iteration=attempt,
-                        callback=lambda: self.implementation_agent.run(iteration=attempt, failure_reports=failure_reports),
+                        callback=lambda: self.implementation_agent.run(
+                            iteration=attempt,
+                            failure_reports=failure_reports,
+                            fix_plan=fix_plan,
+                        ),
                     )
                 except Exception as exc:
                     failure_reports = [FailureReport(source="implementation-agent", summary="Implementation pass failed", details=[str(exc)])]
                     iteration_log["events"].append({"implementation_failure": [report.summary for report in failure_reports]})
+                    fix_plan = None
                     if attempt > self.max_retries:
                         self._update_milestone("Implementation", TaskStatus.FAILED, attempt=attempt)
                         raise
@@ -158,13 +166,42 @@ class OrchestratorAgent:
                 if test_result.passed: # If tests pass then break loop
                     self._update_milestone("Testing", TaskStatus.COMPLETED, attempt=attempt)
                     failure_reports = []
+                    fix_plan = None
                     break
 
                 failure_reports = test_result.failure_reports # If tests fail then feed feedback to the next loop
                 self._update_milestone("Testing", TaskStatus.RETRYING, attempt=attempt, failures=len(failure_reports))
+                self._update_milestone("Debugging", TaskStatus.IN_PROGRESS, attempt=attempt, failures=len(failure_reports))
+                try:
+                    fix_plan = self._run_with_failure_capture(
+                        milestone_name="Debugging",
+                        iteration=attempt,
+                        callback=lambda: self.debugging_agent.run(iteration=attempt, failure_reports=failure_reports),
+                    )
+                    iteration_log["events"].append({"debugging": asdict(fix_plan)})
+                    self._update_milestone(
+                        "Debugging",
+                        TaskStatus.COMPLETED,
+                        attempt=attempt,
+                        failure_groups=fix_plan.failure_groups,
+                        strategy=fix_plan.strategy,
+                    )
+                except Exception as exc:
+                    fix_plan = None
+                    failure_reports.append(
+                        FailureReport(
+                            source="debugging-agent",
+                            summary="Debugging pass failed",
+                            details=[str(exc)],
+                        )
+                    )
+                    iteration_log["events"].append({"debugging_failure": str(exc)})
+                    self._update_milestone("Debugging", TaskStatus.RETRYING, attempt=attempt, failures=len(failure_reports))
 
             if attempt > self.max_retries:
                 self._update_milestone("Testing", TaskStatus.FAILED, attempt=attempt)
+                if self.context.debugging is not None:
+                    self._update_milestone("Debugging", TaskStatus.COMPLETED, attempt=attempt)
                 break
 
         with self.logger.timed(self.name, "Evaluation completed", "orchestration", len(self.context.iterations)): # Phase 5 evaluation
@@ -189,6 +226,7 @@ class OrchestratorAgent:
             Milestone(name="Architecture", description="Define structure, boundaries, and tradeoffs.", owner=self.architecture_agent.name),
             Milestone(name="Implementation", description="Generate the working prototype.", owner=self.implementation_agent.name),
             Milestone(name="Testing", description="Validate functionality and surface failures.", owner=self.testing_agent.name),
+            Milestone(name="Debugging", description="Diagnose failures and produce a fix plan.", owner=self.debugging_agent.name),
             Milestone(name="Evaluation", description="Assess quality, risk, and technical debt.", owner=self.evaluation_agent.name),
         ]
 

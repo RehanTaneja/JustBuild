@@ -141,3 +141,24 @@ def default_responses() -> list[str]:
             }
         ),
     ]
+
+
+def debugging_response(
+    failure_groups: list[str] | None = None,
+    root_cause: str = "The generated bundle omitted required prototype content.",
+    strategy: str = "Regenerate the failing files and satisfy the testing contract before the next pass.",
+    file_changes: list[str] | None = None,
+    priority_order: list[str] | None = None,
+) -> str:
+    return json.dumps(
+        {
+            "file_changes": file_changes or [
+                "Update index.html to include the required feature section.",
+                "Update app.js to include the generated response flow.",
+            ],
+            "root_cause": root_cause,
+            "strategy": strategy,
+            "failure_groups": failure_groups or ["content_mismatch"],
+            "priority_order": priority_order or ["index.html", "app.js"],
+        }
+    )

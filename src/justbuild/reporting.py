@@ -22,6 +22,7 @@ def write_final_report(context: BuildContext) -> Path:
     build_root.mkdir(parents=True, exist_ok=True)
     path = build_root / "final_report.md"
     testing = context.testing
+    debugging = context.debugging
     evaluation = context.evaluation
     specification = context.specification
 
@@ -38,6 +39,12 @@ def write_final_report(context: BuildContext) -> Path:
 
 - Status: {"PASS" if testing and testing.passed else "FAIL"}
 - Summary: {testing.summary if testing else "No testing summary available."}
+
+## Self-Healing
+
+- Fix plan used: {"YES" if debugging else "NO"}
+- Root cause: {debugging.root_cause if debugging else "No debugging diagnosis recorded."}
+- Strategy: {debugging.strategy if debugging else "No debugging strategy recorded."}
 
 ## Risk Assessment
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 
-from .models import ArchitecturePlan, FailureReport, ProductSpecification, TestResult
+from .models import ArchitecturePlan, FailureReport, FixPlan, ImplementationArtifacts, ProductSpecification, TestResult
 
 
 SPECIFICATION_SCHEMA = {
@@ -56,6 +56,17 @@ EVALUATION_SCHEMA = {
     ],
 }
 
+DEBUGGING_SCHEMA = {
+    "type": "object",
+    "required": [
+        "file_changes",
+        "root_cause",
+        "strategy",
+        "failure_groups",
+        "priority_order",
+    ],
+}
+
 
 def specification_system_prompt() -> str:
     return (
@@ -104,6 +115,7 @@ def implementation_user_prompt(
     spec: ProductSpecification,
     architecture: ArchitecturePlan,
     failure_reports: list[FailureReport] | None,
+    fix_plan: FixPlan | None = None,
 ) -> str:
     failures = [
         {"source": report.source, "summary": report.summary, "details": report.details}
@@ -114,12 +126,14 @@ def implementation_user_prompt(
         f"Specification: {json.dumps(asdict(spec), indent=2)}\n"
         f"Architecture: {json.dumps(asdict(architecture), indent=2)}\n"
         f"Previous failures to fix: {json.dumps(failures, indent=2)}\n"
+        f"Fix plan guidance: {json.dumps(asdict(fix_plan), indent=2) if fix_plan else 'null'}\n"
         "Return JSON with:\n"
         '- notes: array of strings\n'
         '- files: object with keys index.html, styles.css, app.js, README.md\n'
         "The HTML must include the product title and a 'Feature Breakdown' section.\n"
         "The JS must include the phrase 'Generated Response'.\n"
-        "The CSS must include a :root block."
+        "The CSS must include a :root block.\n"
+        "If a fix plan is provided, prioritize it over the prior bundle."
     )
 
 
@@ -159,4 +173,36 @@ def evaluation_user_prompt(
         "Return JSON with code_quality, maintainability, scalability_risks, "
         "security_concerns, refactoring_opportunities, technical_debt, risk_assessment "
         "as arrays of strings."
+    )
+
+
+def debugging_system_prompt() -> str:
+    return (
+        "You are the JustBuild debugging agent. Return valid JSON only. "
+        "Diagnose test and implementation failures, classify them, and propose a fix plan."
+    )
+
+
+def debugging_user_prompt(
+    failure_reports: list[FailureReport],
+    implementation: ImplementationArtifacts | None,
+    testing: TestResult | None,
+    specification: ProductSpecification | None,
+    architecture: ArchitecturePlan | None,
+) -> str:
+    failures = [asdict(report) for report in failure_reports]
+    implementation_data = asdict(implementation) if implementation else None
+    testing_data = asdict(testing) if testing else None
+    specification_data = asdict(specification) if specification else None
+    architecture_data = asdict(architecture) if architecture else None
+    return (
+        "Read the current build failures and produce a fix plan.\n"
+        f"Failure reports: {json.dumps(failures, indent=2, default=str)}\n"
+        f"Implementation artifacts: {json.dumps(implementation_data, indent=2, default=str)}\n"
+        f"Testing result: {json.dumps(testing_data, indent=2, default=str)}\n"
+        f"Specification: {json.dumps(specification_data, indent=2, default=str)}\n"
+        f"Architecture: {json.dumps(architecture_data, indent=2, default=str)}\n"
+        "Classify failures using only: missing_file, logic_error, schema_mismatch, content_mismatch, llm_output_invalid.\n"
+        "Return JSON with file_changes, root_cause, strategy, failure_groups, priority_order.\n"
+        "All list fields must be arrays of strings. root_cause and strategy must be concise strings."
     )

@@ -6,6 +6,7 @@
 - designs an architecture,
 - generates a working prototype,
 - validates the result,
+- diagnoses failures with a debugging agent,
 - evaluates maintainability and risk,
 - iterates when failures are detected.
 
@@ -30,6 +31,7 @@ Local support is endpoint-based. The project does not load model weights in-proc
 - `planning`: product specification and architecture generation
 - `implementation`: prototype file generation and refinement
 - `testing`: validation, failure reporting, and test execution
+- `debugging`: LLM-driven failure diagnosis and fix-plan generation
 - `evaluation`: maintainability, security, and scalability assessment
 - `observability`: structured decision logging, timing, and iteration history
 

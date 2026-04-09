@@ -90,6 +90,15 @@ class ImplementationArtifacts:
     notes: list[str] = field(default_factory=list)
     file_bundle: dict[str, str] = field(default_factory=dict)
 
+
+@dataclass(slots=True)
+class FixPlan:
+    file_changes: list[str]
+    root_cause: str
+    strategy: str
+    failure_groups: list[str]
+    priority_order: list[str]
+
 # Used by orchestrator to enable/continue/stop iteration loop: passed->proceed, else repeat.
 @dataclass(slots=True)
 class TestResult:
@@ -123,6 +132,7 @@ class BuildContext:
     architecture: ArchitecturePlan | None = None
     implementation: ImplementationArtifacts | None = None
     testing: TestResult | None = None
+    debugging: FixPlan | None = None
     evaluation: EvaluationReport | None = None
     build_summary_path: Path | None = None
     final_report_path: Path | None = None

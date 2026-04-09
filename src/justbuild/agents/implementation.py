@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from .base import BaseAgent
 from ..llm import LLMError
-from ..models import FailureReport, ImplementationArtifacts
+from ..models import FailureReport, FixPlan, ImplementationArtifacts
 from ..prompts import IMPLEMENTATION_SCHEMA, implementation_system_prompt, implementation_user_prompt
 from ..prototype import slugify, write_prototype_bundle
 from ..validation import JSONValidationError, parse_implementation_bundle
@@ -16,7 +16,12 @@ Takes spec + architecture --> generates files. It writes:
 class ImplementationAgent(BaseAgent):
     name = "implementation-agent"
 
-    def run(self, iteration: int, failure_reports: list[FailureReport] | None = None) -> ImplementationArtifacts:
+    def run(
+        self,
+        iteration: int,
+        failure_reports: list[FailureReport] | None = None,
+        fix_plan: FixPlan | None = None,
+    ) -> ImplementationArtifacts:
         spec = self.context.specification
         architecture = self.context.architecture
         if spec is None or architecture is None:
@@ -24,7 +29,7 @@ class ImplementationAgent(BaseAgent):
 
         slug = slugify(spec.title)
         output_dir = self.context.request.output_root / slug
-        prompt = implementation_user_prompt(spec, architecture, failure_reports)
+        prompt = implementation_user_prompt(spec, architecture, failure_reports, fix_plan=fix_plan)
         system_prompt = implementation_system_prompt()
         try:
             response = self.llm.generate(prompt, system_prompt=system_prompt, response_schema=IMPLEMENTATION_SCHEMA)
@@ -50,6 +55,8 @@ class ImplementationAgent(BaseAgent):
 
         if failure_reports:
             notes.append(f"Refinement pass applied after {len(failure_reports)} reported failures.")
+        if fix_plan is not None:
+            notes.append(f"Applied debug-guided strategy: {fix_plan.strategy}")
         generated_files = write_prototype_bundle(output_dir, file_bundle)
 
         artifacts = ImplementationArtifacts(
