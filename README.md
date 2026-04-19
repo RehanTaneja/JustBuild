@@ -12,6 +12,16 @@
 
 The current implementation is intentionally dependency-light and uses Python's standard library so the system can run anywhere with `python3`.
 
+## Operator Runbook
+
+Use the dedicated runbook in [README.run.md](/Users/rehantaneja/Documents/MyDoc/Carreer/Projects/JustBuild/README.run.md) for:
+
+- clean-environment setup
+- installed CLI usage with `justbuild`
+- automated verification commands
+- cloud API and open-source model run flows
+- troubleshooting and real test results
+
 ## LLM Backends
 
 Agents are now LLM-driven. Every planning, architecture, implementation, testing, and evaluation step builds a prompt, calls an `LLMClient`, requires JSON-only output, and validates the response before continuing.
@@ -59,7 +69,11 @@ The testing layer now combines LLM-generated test planning with deterministic ru
 ## Run
 
 ```bash
-PYTHONPATH=src python3 -m justbuild "AI travel planner for remote teams" \
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e .
+
+justbuild "AI travel planner for remote teams" \
   --provider openai \
   --model gpt-4.1-mini \
   --api-key "$JUSTBUILD_LLM_API_KEY" \
@@ -76,7 +90,7 @@ Generated prototypes are written to `build_output/<idea-slug>/prototype`.
 OpenAI-compatible local model example:
 
 ```bash
-PYTHONPATH=src python3 -m justbuild "AI travel planner for remote teams" \
+justbuild "AI travel planner for remote teams" \
   --provider openai_compatible \
   --local-model llama3 \
   --base-url http://localhost:11434/v1
@@ -117,8 +131,14 @@ GitHub publishing uses the authenticated GitHub CLI on the machine running JustB
 ## Test
 
 ```bash
-PYTHONPATH=src python3 -m unittest discover -s tests -v
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e .
+python -m unittest discover -s tests -v
+python -m pytest
 ```
+
+If you are using Python 3.12 in an offline or restricted environment, a fresh venv may not include `setuptools`, which can block editable installs. See [README.run.md](/Users/rehantaneja/Documents/MyDoc/Carreer/Projects/JustBuild/README.run.md) for the fallback flow used during readiness testing.
 
 ## Scaling Direction
 

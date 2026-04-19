@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from justbuild.cli import main
+from justbuild.llm import LLMConfigurationError
 from justbuild.models import GitHubPublishResult
 from tests.support import FakeLLMClient
 
@@ -131,6 +132,20 @@ class CLITests(unittest.TestCase):
         self.assertTrue(payload["github_publish"]["enabled"])
         self.assertTrue(payload["github_publish"]["published"])
         self.assertEqual(payload["github_publish"]["repo_full_name"], "demo/cli-prototype")
+
+    def test_cli_reports_actionable_configuration_error(self) -> None:
+        stderr = StringIO()
+        with patch("sys.stderr", stderr), patch(
+            "justbuild.cli.OrchestratorAgent",
+            side_effect=LLMConfigurationError("No LLM backend configured"),
+        ):
+            exit_code = main(["smoke test"])
+
+        message = stderr.getvalue()
+        self.assertEqual(exit_code, 2)
+        self.assertIn("Configuration error: No LLM backend configured", message)
+        self.assertIn("--provider openai --model <model> --api-key <key>", message)
+        self.assertIn("--provider openai_compatible --local-model <model> --base-url <url>", message)
 
 
 if __name__ == "__main__":

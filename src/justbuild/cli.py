@@ -3,9 +3,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 
-from .llm import LLMClient
+from .llm import LLMClient, LLMConfigurationError
 from .orchestrator import OrchestratorAgent
 from .prototype import slugify
 
@@ -37,6 +38,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--github-visibility", default=os.getenv("JUSTBUILD_GITHUB_VISIBILITY", "public"), help="Visibility for published GitHub repositories")
     return parser
 
+
+def _print_configuration_error(error: LLMConfigurationError) -> None:
+    message = "\n".join(
+        [
+            f"Configuration error: {error}",
+            "",
+            "Provide one of these minimum LLM setups:",
+            "1. Cloud API mode:",
+            "   --provider openai --model <model> --api-key <key>",
+            "   or set JUSTBUILD_LLM_PROVIDER, JUSTBUILD_LLM_MODEL, JUSTBUILD_LLM_API_KEY",
+            "2. Local OpenAI-compatible mode:",
+            "   --provider openai_compatible --local-model <model> --base-url <url>",
+            "   or set JUSTBUILD_LLM_PROVIDER, JUSTBUILD_LLM_LOCAL_MODEL, JUSTBUILD_LLM_BASE_URL",
+        ]
+    )
+    print(message, file=sys.stderr)
+
 # This is the actual execution flow.
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
@@ -51,20 +69,24 @@ def main(argv: list[str] | None = None) -> int:
         model=args.model,
         base_url=args.base_url,
     )
-    orchestrator = OrchestratorAgent(
-        product_idea=args.idea,
-        output_root=output_root,
-        llm_client=llm_client,
-        enable_playwright=args.enable_playwright,
-        node_bin=args.node_bin,
-        pytest_bin=args.pytest_bin,
-        max_workers=args.max_workers,
-        memory_path=memory_path,
-        publish_to_github=args.publish_github,
-        github_repo_name=args.github_repo_name,
-        github_repo_visibility=args.github_visibility,
-    ) # Initializes orchestrator.
-    context = orchestrator.run() # Runs the entire system.
+    try:
+        orchestrator = OrchestratorAgent(
+            product_idea=args.idea,
+            output_root=output_root,
+            llm_client=llm_client,
+            enable_playwright=args.enable_playwright,
+            node_bin=args.node_bin,
+            pytest_bin=args.pytest_bin,
+            max_workers=args.max_workers,
+            memory_path=memory_path,
+            publish_to_github=args.publish_github,
+            github_repo_name=args.github_repo_name,
+            github_repo_visibility=args.github_visibility,
+        ) # Initializes orchestrator.
+        context = orchestrator.run() # Runs the entire system.
+    except LLMConfigurationError as exc:
+        _print_configuration_error(exc)
+        return 2
 
     payload = {
         "idea": args.idea,
