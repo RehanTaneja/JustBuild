@@ -30,6 +30,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--enable-playwright", action="store_true", default=os.getenv("JUSTBUILD_ENABLE_PLAYWRIGHT") == "1", help="Enable optional Playwright browser validation")
     parser.add_argument("--node-bin", default=os.getenv("JUSTBUILD_NODE_BIN", "node"), help="Node.js binary for JS runtime validation")
     parser.add_argument("--pytest-bin", default=os.getenv("JUSTBUILD_PYTEST_BIN", "pytest"), help="Pytest binary for Python execution validation")
+    parser.add_argument("--max-workers", type=int, default=int(os.getenv("JUSTBUILD_MAX_WORKERS", "4")), help="Maximum worker threads for parallel execution")
+    parser.add_argument("--memory-path", default=os.getenv("JUSTBUILD_MEMORY_PATH"), help="Path to the persistent build memory JSON file")
+    parser.add_argument("--publish-github", action="store_true", default=os.getenv("JUSTBUILD_PUBLISH_GITHUB") == "1", help="Publish completed builds to a GitHub repository")
+    parser.add_argument("--github-repo-name", default=os.getenv("JUSTBUILD_GITHUB_REPO_NAME"), help="Optional GitHub repository name override for published builds")
+    parser.add_argument("--github-visibility", default=os.getenv("JUSTBUILD_GITHUB_VISIBILITY", "public"), help="Visibility for published GitHub repositories")
     return parser
 
 # This is the actual execution flow.
@@ -38,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv) # Parses all the input.
 
     output_root = Path(args.output_root).resolve() # Converts string to proper file path and makes it absolute.
+    memory_path = Path(args.memory_path).resolve() if args.memory_path else None
     llm_client = LLMClient(
         api_key=args.api_key,
         local_model=args.local_model,
@@ -52,6 +58,11 @@ def main(argv: list[str] | None = None) -> int:
         enable_playwright=args.enable_playwright,
         node_bin=args.node_bin,
         pytest_bin=args.pytest_bin,
+        max_workers=args.max_workers,
+        memory_path=memory_path,
+        publish_to_github=args.publish_github,
+        github_repo_name=args.github_repo_name,
+        github_repo_visibility=args.github_visibility,
     ) # Initializes orchestrator.
     context = orchestrator.run() # Runs the entire system.
 
@@ -67,12 +78,22 @@ def main(argv: list[str] | None = None) -> int:
             "enable_playwright": context.request.enable_playwright,
             "node_bin": context.request.node_bin,
             "pytest_bin": context.request.pytest_bin,
+            "max_workers": context.request.max_workers,
+        },
+        "memory_path": str(context.request.memory_path) if context.request.memory_path else None,
+        "github_publish": {
+            "enabled": context.github_publish.enabled if context.github_publish else False,
+            "published": context.github_publish.published if context.github_publish else False,
+            "repo_url": context.github_publish.repo_url if context.github_publish else None,
+            "repo_full_name": context.github_publish.repo_full_name if context.github_publish else None,
+            "failure_reason": context.github_publish.failure_reason if context.github_publish else None,
         },
         "prototype_dir": str(context.implementation.prototype_dir) if context.implementation and context.implementation.prototype_dir else None,
         "summary_path": str(context.build_summary_path) if context.build_summary_path else None,
         "final_report_path": str(context.final_report_path) if context.final_report_path else None,
         "passed": context.testing.passed if context.testing else False,
         "iterations": len(context.iterations),
+        "workflow_terminal_state": context.workflow_terminal_state,
         "roadmap": [
             "Replace mocked API seams with real service implementations.",
             "Add persistent storage and authentication.",

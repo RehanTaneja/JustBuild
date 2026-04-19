@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,9 +8,10 @@ from pathlib import Path
 from justbuild.agents.base import AgentDependencies
 from justbuild.agents.debugging import DebuggingAgent
 from justbuild.llm import LLMClient
-from justbuild.models import BuildContext, BuildRequest, FailureReport
+from justbuild.models import BuildContext, BuildRequest, FailureReport, GitHubPublishResult
 from justbuild.observability import BuildLogger
 from justbuild.orchestrator import OrchestratorAgent
+from justbuild.publishing import GitHubPublishError
 from tests.support import FakeLLMClient, debugging_response, default_responses
 
 """
@@ -28,6 +30,7 @@ class MultiAgentSystemTests(unittest.TestCase):
                 llm_client=FakeLLMClient(responses=default_responses()),
                 node_bin="missing-node",
                 pytest_bin="missing-pytest",
+                memory_path=Path(tmp_dir) / "build_memory.json",
             )
             context = orchestrator.run() # Runs the full pipeline and returns the build context.
 
@@ -49,6 +52,7 @@ class MultiAgentSystemTests(unittest.TestCase):
                 llm_client=FakeLLMClient(responses=default_responses()),
                 node_bin="missing-node",
                 pytest_bin="missing-pytest",
+                memory_path=Path(tmp_dir) / "build_memory.json",
             ).run()
             statuses = {milestone.name: milestone.status.value for milestone in context.milestones}
             self.assertEqual(statuses["Discovery & Planning"], "completed")
@@ -57,6 +61,7 @@ class MultiAgentSystemTests(unittest.TestCase):
             self.assertEqual(statuses["Testing"], "completed")
             self.assertEqual(statuses["Debugging"], "pending")
             self.assertEqual(statuses["Evaluation"], "completed")
+            self.assertEqual(statuses["Publishing"], "pending")
 
     def test_invalid_specification_json_raises(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -66,6 +71,7 @@ class MultiAgentSystemTests(unittest.TestCase):
                 llm_client=FakeLLMClient(responses=["not-json"]),
                 node_bin="missing-node",
                 pytest_bin="missing-pytest",
+                memory_path=Path(tmp_dir) / "build_memory.json",
             )
             with self.assertRaises(ValueError):
                 orchestrator.run()
@@ -73,13 +79,10 @@ class MultiAgentSystemTests(unittest.TestCase):
     def test_implementation_retries_after_invalid_llm_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             base = default_responses()
-            responses = [
-                base[0],
-                base[1],
+            responses = dict(base)
+            responses["implementation"] = [
                 '{"notes": ["broken"], "files": {"index.html": "missing rest"}}',
-                base[2],
-                base[3],
-                base[4],
+                base["implementation"],
             ]
             orchestrator = OrchestratorAgent(
                 product_idea="Planning assistant",
@@ -87,6 +90,7 @@ class MultiAgentSystemTests(unittest.TestCase):
                 llm_client=FakeLLMClient(responses=responses),
                 node_bin="missing-node",
                 pytest_bin="missing-pytest",
+                memory_path=Path(tmp_dir) / "build_memory.json",
             )
             context = orchestrator.run()
 
@@ -139,23 +143,19 @@ class MultiAgentSystemTests(unittest.TestCase):
                 '"app.js":"console.log(\\"missing flow\\");",'
                 '"README.md":"# Collaborative roadmap planner\\n"}}'
             )
-            fixed_implementation = base[2]
-            responses = [
-                base[0],
-                base[1],
+            responses = dict(base)
+            responses["implementation"] = [
                 broken_implementation,
-                base[3],
-                debugging_response(failure_groups=["content_mismatch"]),
-                fixed_implementation,
-                base[3],
-                base[4],
+                base["implementation"],
             ]
+            responses["debugging"] = debugging_response(failure_groups=["content_mismatch"])
             context = OrchestratorAgent(
                 product_idea="Planning assistant",
                 output_root=Path(tmp_dir),
                 llm_client=FakeLLMClient(responses=responses),
                 node_bin="missing-node",
                 pytest_bin="missing-pytest",
+                memory_path=Path(tmp_dir) / "build_memory.json",
             ).run()
 
             self.assertTrue(context.testing.passed)
@@ -168,24 +168,17 @@ class MultiAgentSystemTests(unittest.TestCase):
     def test_schema_validation_failure_triggers_debugging(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             base = default_responses()
-            bad_spec = base.copy()
-            bad_spec[0] = (
+            responses = dict(base)
+            responses["specification"] = (
                 '{"title":"Collaborative roadmap planner","product_summary":"A planning workspace for product teams.",'
                 '"requirements":["Deliver a working prototype."],"features":["Feature Breakdown dashboard"],'
                 '"user_stories":["As a PM, I want to create a plan quickly."],"api_contracts":["BROKEN CONTRACT"],'
                 '"assumptions":["In-memory data is acceptable for v1."],"constraints":["Remain runnable with standard Python tooling."],'
                 '"missing_requirements":["Persona detail should be refined later."]}'
             )
-            responses = [
-                bad_spec[0],
-                base[1],
-                base[2],
-                base[3],
+            responses["debugging"] = [
                 debugging_response(failure_groups=["schema_mismatch"], priority_order=["api_contracts"]),
-                base[2],
-                base[3],
                 debugging_response(failure_groups=["schema_mismatch"], priority_order=["api_contracts"]),
-                base[4],
             ]
             context = OrchestratorAgent(
                 product_idea="Planning assistant",
@@ -194,11 +187,152 @@ class MultiAgentSystemTests(unittest.TestCase):
                 node_bin="missing-node",
                 pytest_bin="missing-pytest",
                 max_retries=1,
+                memory_path=Path(tmp_dir) / "build_memory.json",
             ).run()
 
             self.assertIsNotNone(context.debugging)
             self.assertIn("schema_mismatch", context.debugging.failure_groups)
             self.assertFalse(context.testing.passed)
+
+    def test_max_workers_one_preserves_behavior(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            context = OrchestratorAgent(
+                product_idea="Single worker test",
+                output_root=Path(tmp_dir),
+                llm_client=FakeLLMClient(responses=default_responses()),
+                node_bin="missing-node",
+                pytest_bin="missing-pytest",
+                max_workers=1,
+                memory_path=Path(tmp_dir) / "build_memory.json",
+            ).run()
+
+            self.assertTrue(context.testing.passed)
+            self.assertEqual(context.request.max_workers, 1)
+
+    def test_build_memory_persists_across_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            memory_path = Path(tmp_dir) / "build_memory.json"
+            first_context = OrchestratorAgent(
+                product_idea="Memory planner one",
+                output_root=Path(tmp_dir),
+                llm_client=FakeLLMClient(responses=default_responses()),
+                node_bin="missing-node",
+                pytest_bin="missing-pytest",
+                memory_path=memory_path,
+            ).run()
+
+            self.assertTrue(memory_path.exists())
+            first_payload = json.loads(memory_path.read_text(encoding="utf-8"))
+            self.assertEqual(len(first_payload["past_builds"]), 1)
+            self.assertIn("successful_patterns", first_payload)
+            self.assertIsNotNone(first_context.memory)
+
+            second_context = OrchestratorAgent(
+                product_idea="Memory planner two",
+                output_root=Path(tmp_dir),
+                llm_client=FakeLLMClient(responses=default_responses()),
+                node_bin="missing-node",
+                pytest_bin="missing-pytest",
+                memory_path=memory_path,
+            ).run()
+
+            second_payload = json.loads(memory_path.read_text(encoding="utf-8"))
+            self.assertEqual(len(second_payload["past_builds"]), 2)
+            self.assertTrue(second_context.memory.past_builds)
+            self.assertIn("successful_patterns", second_payload["successful_patterns"])
+
+    def test_memory_is_injected_into_prompts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake_llm = FakeLLMClient(responses=default_responses())
+            memory_path = Path(tmp_dir) / "build_memory.json"
+            memory_path.write_text(
+                json.dumps(
+                    {
+                        "past_builds": [],
+                        "failure_patterns": {
+                            "repeated_bugs": [
+                                {"pattern": "Missing Feature Breakdown section", "count": 2, "examples": ["index.html omitted Feature Breakdown"]}
+                            ]
+                        },
+                        "successful_patterns": {
+                            "successful_patterns": [
+                                {"pattern": "Passing testing pipeline with execution, schema, and browser-aware checks.", "count": 1, "examples": []}
+                            ]
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            OrchestratorAgent(
+                product_idea="Memory-aware planner",
+                output_root=Path(tmp_dir),
+                llm_client=fake_llm,
+                node_bin="missing-node",
+                pytest_bin="missing-pytest",
+                memory_path=memory_path,
+            ).run()
+
+            prompts = "\n".join(prompt for _, prompt in fake_llm.prompt_history)
+            self.assertIn("Common past failures", prompts)
+            self.assertIn("Previously successful patterns", prompts)
+
+    def test_publish_failure_does_not_fail_build(self) -> None:
+        class FailingPublisher:
+            def publish(self, context):  # pragma: no cover - exercised through orchestrator
+                raise GitHubPublishError("simulated publish outage")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            context = OrchestratorAgent(
+                product_idea="Publishing failure test",
+                output_root=Path(tmp_dir),
+                llm_client=FakeLLMClient(responses=default_responses()),
+                node_bin="missing-node",
+                pytest_bin="missing-pytest",
+                memory_path=Path(tmp_dir) / "build_memory.json",
+                publish_to_github=True,
+                publisher=FailingPublisher(),
+            ).run()
+
+            self.assertTrue(context.testing.passed)
+            self.assertIsNotNone(context.github_publish)
+            self.assertFalse(context.github_publish.published)
+            self.assertIn("simulated publish outage", context.github_publish.failure_reason)
+            publishing_status = next(item for item in context.milestones if item.name == "Publishing")
+            self.assertEqual(publishing_status.status.value, "failed")
+
+    def test_publish_success_is_reported(self) -> None:
+        class SuccessfulPublisher:
+            def publish(self, context):
+                publish_dir = context.implementation.prototype_dir.parent / "github_publish"
+                publish_dir.mkdir(parents=True, exist_ok=True)
+                return GitHubPublishResult(
+                    enabled=True,
+                    published=True,
+                    repo_name="demo-prototype",
+                    repo_full_name="demo/demo-prototype",
+                    repo_url="https://github.com/demo/demo-prototype",
+                    branch="main",
+                    local_publish_dir=publish_dir,
+                    commits=["feat: initial prototype generation", "docs: add final build summary and report"],
+                )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            context = OrchestratorAgent(
+                product_idea="Publishing success test",
+                output_root=Path(tmp_dir),
+                llm_client=FakeLLMClient(responses=default_responses()),
+                node_bin="missing-node",
+                pytest_bin="missing-pytest",
+                memory_path=Path(tmp_dir) / "build_memory.json",
+                publish_to_github=True,
+                publisher=SuccessfulPublisher(),
+            ).run()
+
+            self.assertTrue(context.github_publish.published)
+            self.assertEqual(context.github_publish.repo_full_name, "demo/demo-prototype")
+            publishing_status = next(item for item in context.milestones if item.name == "Publishing")
+            self.assertEqual(publishing_status.status.value, "completed")
 
 
 if __name__ == "__main__":

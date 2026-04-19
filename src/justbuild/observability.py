@@ -82,12 +82,22 @@ def write_build_summary(context: BuildContext) -> Path:
             "enable_playwright": context.request.enable_playwright,
             "node_bin": context.request.node_bin,
             "pytest_bin": context.request.pytest_bin,
+            "max_workers": context.request.max_workers,
+        },
+        "memory_path": str(context.request.memory_path) if context.request.memory_path else None,
+        "github_delivery": {
+            "publish_to_github": context.request.publish_to_github,
+            "github_repo_name": context.request.github_repo_name,
+            "github_repo_visibility": context.request.github_repo_visibility,
         },
         "milestones": [asdict(m) for m in context.milestones],
         "decisions": [asdict(d) for d in context.decisions],
         "iterations": context.iterations,
+        "workflow_terminal_state": context.workflow_terminal_state,
+        "node_runs": [asdict(run) for run in context.node_runs],
         "specification": asdict(context.specification) if context.specification else None,
         "architecture": asdict(context.architecture) if context.architecture else None,
+        "architecture_review": asdict(context.architecture_review) if context.architecture_review else None,
         "implementation": {
             "prototype_dir": str(context.implementation.prototype_dir) if context.implementation and context.implementation.prototype_dir else None,
             "generated_files": [str(path) for path in context.implementation.generated_files] if context.implementation else [],
@@ -108,6 +118,18 @@ def write_build_summary(context: BuildContext) -> Path:
         },
         "debugging": asdict(context.debugging) if context.debugging else None,
         "evaluation": asdict(context.evaluation) if context.evaluation else None,
+        "memory": asdict(context.memory) if context.memory else None,
+        "github_publish": {
+            "enabled": context.github_publish.enabled if context.github_publish else False,
+            "published": context.github_publish.published if context.github_publish else False,
+            "repo_name": context.github_publish.repo_name if context.github_publish else None,
+            "repo_full_name": context.github_publish.repo_full_name if context.github_publish else None,
+            "repo_url": context.github_publish.repo_url if context.github_publish else None,
+            "branch": context.github_publish.branch if context.github_publish else None,
+            "local_publish_dir": str(context.github_publish.local_publish_dir) if context.github_publish and context.github_publish.local_publish_dir else None,
+            "commits": context.github_publish.commits if context.github_publish else [],
+            "failure_reason": context.github_publish.failure_reason if context.github_publish else None,
+        },
     }
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     context.build_summary_path = path

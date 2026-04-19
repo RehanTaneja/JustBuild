@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import copy
 import json
+import threading
+from typing import Any
 
 
 class FakeLLMClient:
-    def __init__(self, responses: list[str] | None = None, **kwargs: str | None) -> None:
-        self._responses = list(responses or default_responses())
+    def __init__(self, responses: dict[str, Any] | list[str] | None = None, **kwargs: str | None) -> None:
+        provided = responses or default_responses()
+        self._responses = copy.deepcopy(provided)
+        self._lock = threading.Lock()
+        self.prompt_history: list[tuple[str | None, str]] = []
         self.api_key = kwargs.get("api_key")
         self.local_model = kwargs.get("local_model")
         self.provider = kwargs.get("provider") or ("openai_compatible" if self.local_model else "openai")
@@ -27,14 +33,79 @@ class FakeLLMClient:
         )()
 
     def generate(self, prompt: str, system_prompt: str | None = None, response_schema: dict | None = None) -> str:
-        if not self._responses:
-            raise AssertionError(f"No fake LLM response left for prompt: {prompt[:80]}")
-        return self._responses.pop(0)
+        with self._lock:
+            self.prompt_history.append((system_prompt, prompt))
+            if isinstance(self._responses, list):
+                if not self._responses:
+                    raise AssertionError(f"No fake LLM response left for prompt: {prompt[:80]}")
+                return self._responses.pop(0)
+
+            key = self._classify_prompt(prompt, system_prompt)
+            if key not in self._responses:
+                raise AssertionError(f"No fake LLM response configured for key: {key}")
+            value = self._responses[key]
+            if isinstance(value, list):
+                if not value:
+                    raise AssertionError(f"No fake LLM responses left for key: {key}")
+                return value.pop(0)
+            if isinstance(value, str):
+                return value
+            raise AssertionError(f"Unsupported fake response value for key {key}: {type(value)!r}")
+
+    def _classify_prompt(self, prompt: str, system_prompt: str | None) -> str:
+        system = (system_prompt or "").lower()
+        if "specification agent" in system:
+            return "specification"
+        if "architecture review agent" in system:
+            return "architecture_review"
+        if "architecture agent" in system:
+            return "architecture_plan"
+        if "implementation agent" in system:
+            return "implementation"
+        if "testing agent" in system:
+            return "testing"
+        if "debugging agent" in system:
+            return "debugging"
+        if "evaluation draft agent" in system:
+            if "quality" in system:
+                return "evaluation_quality"
+            if "risk" in system:
+                return "evaluation_risk"
+            if "security" in system:
+                return "evaluation_security"
+        if "evaluation agent" in system:
+            return "evaluation"
+        raise AssertionError(f"Unable to classify fake LLM prompt: {prompt[:80]}")
 
 
-def default_responses() -> list[str]:
-    return [
-        json.dumps(
+def default_responses() -> dict[str, str]:
+    evaluation_payload = json.dumps(
+        {
+            "code_quality": [
+                "The prototype keeps responsibilities separated.",
+            ],
+            "maintainability": [
+                "Typed dataclasses keep the workflow consistent.",
+            ],
+            "scalability_risks": [
+                "Parallel orchestration improves throughput for larger builds.",
+            ],
+            "security_concerns": [
+                "Authentication is not implemented yet.",
+            ],
+            "refactoring_opportunities": [
+                "Split execution into worker processes.",
+            ],
+            "technical_debt": [
+                "The implementation still targets static prototypes only.",
+            ],
+            "risk_assessment": [
+                "Low risk for prototype generation, higher risk for production deployment.",
+            ],
+        }
+    )
+    return {
+        "specification": json.dumps(
             {
                 "title": "Collaborative roadmap planner",
                 "product_summary": "A planning workspace for product teams.",
@@ -65,7 +136,7 @@ def default_responses() -> list[str]:
                 ],
             }
         ),
-        json.dumps(
+        "architecture_plan": json.dumps(
             {
                 "summary": "Layered orchestration that generates a browser prototype.",
                 "folder_structure": [
@@ -89,7 +160,16 @@ def default_responses() -> list[str]:
                 ],
             }
         ),
-        json.dumps(
+        "architecture_review": json.dumps(
+            {
+                "findings": [
+                    "The architecture cleanly separates orchestration from generation.",
+                ],
+                "recommendations": [],
+                "requires_refinement": False,
+            }
+        ),
+        "implementation": json.dumps(
             {
                 "notes": [
                     "Generated a browser prototype from the LLM output.",
@@ -102,7 +182,7 @@ def default_responses() -> list[str]:
                 },
             }
         ),
-        json.dumps(
+        "testing": json.dumps(
             {
                 "unit_checks": [
                     "Verify required files exist.",
@@ -115,32 +195,12 @@ def default_responses() -> list[str]:
                 ],
             }
         ),
-        json.dumps(
-            {
-                "code_quality": [
-                    "The prototype keeps responsibilities separated.",
-                ],
-                "maintainability": [
-                    "Typed dataclasses keep the workflow consistent.",
-                ],
-                "scalability_risks": [
-                    "Sequential orchestration is a future bottleneck.",
-                ],
-                "security_concerns": [
-                    "Authentication is not implemented yet.",
-                ],
-                "refactoring_opportunities": [
-                    "Split execution into worker processes.",
-                ],
-                "technical_debt": [
-                    "The implementation still targets static prototypes only.",
-                ],
-                "risk_assessment": [
-                    "Low risk for prototype generation, higher risk for production deployment.",
-                ],
-            }
-        ),
-    ]
+        "evaluation_quality": evaluation_payload,
+        "evaluation_risk": evaluation_payload,
+        "evaluation_security": evaluation_payload,
+        "evaluation": evaluation_payload,
+        "debugging": debugging_response(),
+    }
 
 
 def debugging_response(

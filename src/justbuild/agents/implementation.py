@@ -29,7 +29,13 @@ class ImplementationAgent(BaseAgent):
 
         slug = slugify(spec.title)
         output_dir = self.context.request.output_root / slug
-        prompt = implementation_user_prompt(spec, architecture, failure_reports, fix_plan=fix_plan)
+        prompt = implementation_user_prompt(
+            spec,
+            architecture,
+            failure_reports,
+            fix_plan=fix_plan,
+            memory=self.context.memory,
+        )
         system_prompt = implementation_system_prompt()
         try:
             response = self.llm.generate(prompt, system_prompt=system_prompt, response_schema=IMPLEMENTATION_SCHEMA)

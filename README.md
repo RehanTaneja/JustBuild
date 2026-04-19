@@ -35,6 +35,16 @@ Local support is endpoint-based. The project does not load model weights in-proc
 - `evaluation`: maintainability, security, and scalability assessment
 - `observability`: structured decision logging, timing, and iteration history
 
+The orchestrator now uses thread-based parallel execution for:
+
+- architecture generation + architecture review
+- execution-based testing subtasks
+- evaluation drafts
+
+It also keeps project-scoped memory across runs in `build_memory.json` so future prompts can incorporate common failures and previously successful patterns.
+
+Completed builds can also be published to standalone GitHub repositories. The default publish mode creates one repo per build and pushes the generated prototype, iteration history, build summary, and final report.
+
 ## Testing Layer
 
 The testing layer now combines LLM-generated test planning with deterministic runtime validation:
@@ -54,7 +64,11 @@ PYTHONPATH=src python3 -m justbuild "AI travel planner for remote teams" \
   --model gpt-4.1-mini \
   --api-key "$JUSTBUILD_LLM_API_KEY" \
   --pytest-bin pytest \
-  --node-bin node
+  --node-bin node \
+  --max-workers 4 \
+  --memory-path ./build_output/build_memory.json \
+  --publish-github \
+  --github-repo-name ai-travel-planner-prototype
 ```
 
 Generated prototypes are written to `build_output/<idea-slug>/prototype`.
@@ -74,6 +88,10 @@ Environment variable equivalents:
 export JUSTBUILD_LLM_PROVIDER=openai
 export JUSTBUILD_LLM_MODEL=gpt-4.1-mini
 export JUSTBUILD_LLM_API_KEY=your_api_key
+export JUSTBUILD_MEMORY_PATH=./build_output/build_memory.json
+export JUSTBUILD_PUBLISH_GITHUB=1
+export JUSTBUILD_GITHUB_REPO_NAME=ai-travel-planner-prototype
+export JUSTBUILD_GITHUB_VISIBILITY=public
 ```
 
 ```bash
@@ -87,6 +105,14 @@ Optional browser validation:
 ```bash
 export JUSTBUILD_ENABLE_PLAYWRIGHT=1
 ```
+
+## GitHub Publishing
+
+GitHub publishing uses the authenticated GitHub CLI on the machine running JustBuild:
+
+- `gh` must be installed
+- `gh auth login` should already be completed
+- published repos are created in the authenticated user's account by default
 
 ## Test
 

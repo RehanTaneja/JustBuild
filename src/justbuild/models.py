@@ -32,6 +32,12 @@ class BuildRequest:
     enable_playwright: bool = False
     node_bin: str = "node"
     pytest_bin: str = "pytest"
+    max_workers: int = 4
+    memory_path: Path | None = None
+    publish_to_github: bool = False
+    github_repo_name: str | None = None
+    github_repo_visibility: str = "public"
+    github_commit_per_iteration: bool = True
 
 # This is for the orchestrator to track progress, think of it as tasks.
 @dataclass(slots=True)
@@ -85,6 +91,13 @@ class ArchitecturePlan:
     design_tradeoffs: list[str]
     justification: list[str]
 
+
+@dataclass(slots=True)
+class ArchitectureReview:
+    findings: list[str]
+    recommendations: list[str]
+    requires_refinement: bool
+
 # Separates Spec-> Architecture-> Implementation. This takes the ArchitecturePlan and tracks the actual output of the coding agent.
 @dataclass(slots=True)
 class ImplementationArtifacts:
@@ -101,6 +114,45 @@ class FixPlan:
     strategy: str
     failure_groups: list[str]
     priority_order: list[str]
+
+
+@dataclass(slots=True)
+class PatternRecord:
+    pattern: str
+    count: int = 1
+    examples: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class BuildMemoryEntry:
+    build_id: str
+    product_idea: str
+    title: str
+    passed: bool
+    architecture_findings: list[str] = field(default_factory=list)
+    failure_groups: list[str] = field(default_factory=list)
+    root_cause: str | None = None
+    successful_patterns: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class BuildMemory:
+    past_builds: list[BuildMemoryEntry] = field(default_factory=list)
+    failure_patterns: dict[str, list[PatternRecord]] = field(default_factory=dict)
+    successful_patterns: dict[str, list[PatternRecord]] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class GitHubPublishResult:
+    enabled: bool
+    published: bool
+    repo_name: str | None = None
+    repo_full_name: str | None = None
+    repo_url: str | None = None
+    branch: str | None = None
+    local_publish_dir: Path | None = None
+    commits: list[str] = field(default_factory=list)
+    failure_reason: str | None = None
 
 # Used by orchestrator to enable/continue/stop iteration loop: passed->proceed, else repeat.
 @dataclass(slots=True)
@@ -135,12 +187,17 @@ class BuildContext:
     milestones: list[Milestone] = field(default_factory=list)
     decisions: list[DecisionLog] = field(default_factory=list)
     iterations: list[dict[str, Any]] = field(default_factory=list)
+    node_runs: list[Any] = field(default_factory=list)
+    workflow_terminal_state: str | None = None
+    memory: BuildMemory | None = None
     specification: ProductSpecification | None = None
     architecture: ArchitecturePlan | None = None
+    architecture_review: ArchitectureReview | None = None
     implementation: ImplementationArtifacts | None = None
     testing: TestResult | None = None
     debugging: FixPlan | None = None
     evaluation: EvaluationReport | None = None
+    github_publish: GitHubPublishResult | None = None
     build_summary_path: Path | None = None
     final_report_path: Path | None = None
 

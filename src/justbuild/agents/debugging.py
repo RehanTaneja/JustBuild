@@ -20,6 +20,7 @@ class DebuggingAgent(BaseAgent):
             testing=self.context.testing,
             specification=self.context.specification,
             architecture=self.context.architecture,
+            memory=self.context.memory,
         )
         system_prompt = debugging_system_prompt()
         try:

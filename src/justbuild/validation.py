@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .models import ArchitecturePlan, EvaluationReport, FailureReport, FixPlan, ProductSpecification
+from .models import ArchitecturePlan, ArchitectureReview, EvaluationReport, FailureReport, FixPlan, ProductSpecification
 
 
 class JSONValidationError(ValueError):
@@ -96,6 +96,19 @@ def parse_architecture_plan(raw_text: str) -> ArchitecturePlan:
         database_schema=normalize_string_list(payload["database_schema"], "database_schema"),
         design_tradeoffs=normalize_string_list(payload["design_tradeoffs"], "design_tradeoffs"),
         justification=normalize_string_list(payload["justification"], "justification"),
+    )
+
+
+def parse_architecture_review(raw_text: str) -> ArchitectureReview:
+    payload = parse_json_object(raw_text)
+    require_keys(payload, ["findings", "recommendations", "requires_refinement"])
+    requires_refinement = payload["requires_refinement"]
+    if not isinstance(requires_refinement, bool):
+        raise JSONValidationError("Field 'requires_refinement' must be a boolean")
+    return ArchitectureReview(
+        findings=normalize_string_list(payload["findings"], "findings"),
+        recommendations=normalize_string_list(payload["recommendations"], "recommendations"),
+        requires_refinement=requires_refinement,
     )
 
 

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 from .base import BaseAgent
+from ..concurrency import run_parallel
 from ..execution import (
     run_node_validation,
     run_playwright_validation,
@@ -28,6 +31,11 @@ class TestingAgent(BaseAgent):
     name = "testing-agent"
 
     def run(self, iteration: int) -> TestResult:
+        result = self.generate_result(iteration)
+        self.context.testing = result
+        return result
+
+    def generate_result(self, iteration: int) -> TestResult:
         implementation = self.context.implementation
         spec = self.context.specification
         architecture = self.context.architecture
@@ -44,7 +52,7 @@ class TestingAgent(BaseAgent):
         skipped_checks: list[str] = []
         failure_reports: list[FailureReport] = []
 
-        prompt = testing_user_prompt(spec, architecture)
+        prompt = testing_user_prompt(spec, architecture, memory=self.context.memory)
         system_prompt = testing_system_prompt()
         try:
             response = self.llm.generate(prompt, system_prompt=system_prompt, response_schema=TESTING_SCHEMA)
@@ -96,32 +104,51 @@ class TestingAgent(BaseAgent):
         self._assert_contains(prototype_dir / "app.js", "Generated Response", "JS includes result rendering flow", integration_results, failure_reports)
         self._assert_contains(prototype_dir / "styles.css", ":root", "CSS theme tokens exist", integration_results, failure_reports)
 
-        html_results, html_failures = validate_html_rendering(prototype_dir / "index.html", spec.title)
-        browser_results.extend(html_results)
-        failure_reports.extend(html_failures)
-
-        contract_results, contract_failures = validate_api_contracts(spec)
-        schema_results.extend(contract_results)
-        failure_reports.extend(contract_failures)
-
-        pytest_results, pytest_skips, pytest_failures = run_pytest_validation(self.context.request.pytest_bin)
-        execution_results.extend(pytest_results)
-        skipped_checks.extend(pytest_skips)
-        failure_reports.extend(pytest_failures)
-
-        node_results, node_skips, node_failures = run_node_validation(prototype_dir, self.context.request.node_bin)
-        execution_results.extend(node_results)
-        skipped_checks.extend(node_skips)
-        failure_reports.extend(node_failures)
-
-        playwright_results, playwright_skips, playwright_failures = run_playwright_validation(
-            prototype_dir=prototype_dir,
-            expected_title=spec.title,
-            enabled=self.context.request.enable_playwright,
-        )
-        browser_results.extend(playwright_results)
-        skipped_checks.extend(playwright_skips)
-        failure_reports.extend(playwright_failures)
+        max_workers = max(1, self.context.request.max_workers)
+        parallel_tasks = {
+            "api_schema": lambda: validate_api_contracts(spec),
+            "html_validation": lambda: validate_html_rendering(prototype_dir / "index.html", spec.title),
+            "pytest_validation": lambda: run_pytest_validation(self.context.request.pytest_bin),
+            "node_validation": lambda: run_node_validation(prototype_dir, self.context.request.node_bin),
+            "playwright_validation": lambda: run_playwright_validation(
+                prototype_dir=prototype_dir,
+                expected_title=spec.title,
+                enabled=self.context.request.enable_playwright,
+            ),
+        }
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for task in run_parallel(executor, parallel_tasks):
+                self.logger.log(
+                    self.name,
+                    f"Completed parallel testing task: {task.name}",
+                    "parallel_task",
+                    iteration,
+                    task.elapsed_ms,
+                    metadata={"task": task.name},
+                )
+                if task.name == "api_schema":
+                    contract_results, contract_failures = task.value
+                    schema_results.extend(contract_results)
+                    failure_reports.extend(contract_failures)
+                elif task.name == "html_validation":
+                    html_results, html_failures = task.value
+                    browser_results.extend(html_results)
+                    failure_reports.extend(html_failures)
+                elif task.name == "pytest_validation":
+                    pytest_results, pytest_skips, pytest_failures = task.value
+                    execution_results.extend(pytest_results)
+                    skipped_checks.extend(pytest_skips)
+                    failure_reports.extend(pytest_failures)
+                elif task.name == "node_validation":
+                    node_results, node_skips, node_failures = task.value
+                    execution_results.extend(node_results)
+                    skipped_checks.extend(node_skips)
+                    failure_reports.extend(node_failures)
+                elif task.name == "playwright_validation":
+                    playwright_results, playwright_skips, playwright_failures = task.value
+                    browser_results.extend(playwright_results)
+                    skipped_checks.extend(playwright_skips)
+                    failure_reports.extend(playwright_failures)
 
         passed = not failure_reports
         summary = "All validation checks passed." if passed else f"{len(failure_reports)} validation checks failed."
@@ -137,7 +164,6 @@ class TestingAgent(BaseAgent):
             skipped_checks=skipped_checks,
             failure_reports=failure_reports,
         )
-        self.context.testing = result
         return result
 
     def _assert_contains(

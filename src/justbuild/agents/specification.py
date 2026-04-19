@@ -20,7 +20,7 @@ class SpecificationAgent(BaseAgent):
 
     def run(self, iteration: int, architecture_feedback: list[str] | None = None) -> ProductSpecification:
         idea = self.context.request.product_idea.strip()
-        prompt = specification_user_prompt(idea, architecture_feedback)
+        prompt = specification_user_prompt(idea, architecture_feedback, memory=self.context.memory)
         system_prompt = specification_system_prompt()
         try:
             response = self.llm.generate(prompt, system_prompt=system_prompt, response_schema=SPECIFICATION_SCHEMA)
