@@ -121,10 +121,10 @@ def parse_architecture_review(raw_text: str) -> ArchitectureReview:
 
 def parse_implementation_plan(raw_text: str) -> ImplementationPlan:
     payload = parse_json_object(raw_text)
-    require_keys(payload, ["prototype_kind", "entrypoint", "files", "notes"])
+    require_keys(payload, ["prototype_kind", "entrypoint", "files"])
     prototype_kind = normalize_text(payload["prototype_kind"], "prototype_kind")
     entrypoint = normalize_text(payload["entrypoint"], "entrypoint")
-    notes = normalize_string_list(payload["notes"], "notes")
+    notes = normalize_string_list(payload.get("notes", []), "notes")
     files_value = payload["files"]
     if not isinstance(files_value, list) or not files_value:
         raise JSONValidationError("Field 'files' must be a non-empty list of file descriptors")
@@ -157,11 +157,11 @@ def parse_implementation_plan(raw_text: str) -> ImplementationPlan:
 
 def parse_implementation_file(raw_text: str) -> tuple[str, str, list[str]]:
     payload = parse_json_object(raw_text)
-    require_keys(payload, ["path", "content", "notes"])
+    require_keys(payload, ["path", "content"])
     return (
         normalize_text(payload["path"], "path"),
         normalize_text(payload["content"], "content"),
-        normalize_string_list(payload["notes"], "notes"),
+        normalize_string_list(payload.get("notes", []), "notes"),
     )
 
 

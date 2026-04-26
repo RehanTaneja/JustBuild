@@ -36,12 +36,12 @@ ARCHITECTURE_SCHEMA = {
 
 IMPLEMENTATION_PLAN_SCHEMA = {
     "type": "object",
-    "required": ["prototype_kind", "entrypoint", "files", "notes"],
+    "required": ["prototype_kind", "entrypoint", "files"],
 }
 
 IMPLEMENTATION_FILE_SCHEMA = {
     "type": "object",
-    "required": ["path", "content", "notes"],
+    "required": ["path", "content"],
 }
 
 TESTING_SCHEMA = {
@@ -96,6 +96,9 @@ def specification_user_prompt(idea: str, architecture_feedback: list[str] | None
         f"Idea: {idea}\n"
         f"Architecture feedback to incorporate: {json.dumps(feedback)}\n"
         f"{memory_block}"
+        "Define the smallest recognizable prototype that still demonstrates the core user value of the idea.\n"
+        "For simple browser-based CRUD or utility ideas, prefer a single-user, browser-first, low-infrastructure prototype unless the idea clearly requires more.\n"
+        "Do not invent backend services, databases, authentication, deployment setup, or other production-only complexity unless the idea explicitly requires them.\n"
         "Return fields: title, product_summary, requirements, features, user_stories, "
         "api_contracts, assumptions, constraints, missing_requirements.\n"
         "Each list field must be an array of strings.\n"
@@ -121,6 +124,10 @@ def architecture_user_prompt(spec: ProductSpecification, memory: BuildMemory | N
         "Create an architecture plan for this product specification.\n"
         f"Specification: {json.dumps(asdict(spec), indent=2)}\n"
         f"{memory_block}"
+        "Design the smallest recognizable prototype that satisfies the specification without unnecessary layers.\n"
+        "Every extra service, persistence layer, manifest, migration, or deployment artifact must be justified by an explicit requirement, constraint, or build-critical missing requirement.\n"
+        "When persistence is ambiguous for a simple browser app, prefer local or browser-safe persistence before introducing a backend or database.\n"
+        "Do not add backend infrastructure, auth systems, Docker, migrations, or environment scaffolding unless the specification clearly requires them for the prototype.\n"
         "Return fields: summary, folder_structure, services, database_schema, "
         "design_tradeoffs, justification.\n"
         "Each list field must be an array of strings.\n"
@@ -153,6 +160,8 @@ def architecture_review_user_prompt(
         f"{memory_block}"
         "Return JSON with prototype_blockers, retry_guidance, and requires_refinement.\n"
         "prototype_blockers and retry_guidance must be arrays of strings. requires_refinement must be a boolean.\n"
+        "Treat unjustified complexity as a blocker.\n"
+        "If the architecture adds backend services, databases, migrations, Docker, env scaffolding, or other infrastructure without a clear requirement, constraint, or build-critical missing requirement, return requires_refinement=true and guidance to simplify toward the smallest recognizable prototype.\n"
         "If there are no critical or highly problematic blocker issues, return requires_refinement=false and empty arrays.\n"
         "Only populate retry_guidance when requires_refinement is true.\n"
         "Keep the output minimal and blocker-focused. Do not include general recommendations."
@@ -195,11 +204,14 @@ def implementation_user_prompt(
         f"Previous failures to fix: {json.dumps(failures, indent=2)}\n"
         f"Fix plan guidance: {json.dumps(asdict(fix_plan), indent=2) if fix_plan else 'null'}\n"
         f"{memory_block}"
+        "Plan the minimum file set that still makes the prototype recognizable and functional for the stated idea.\n"
+        "Prefer one compact runnable prototype over layered scaffolding.\n"
+        "Merge thin abstractions when possible, and avoid backend folders, manifests, infrastructure files, or helper sprawl unless the architecture clearly requires them for the prototype.\n"
         "Return JSON with:\n"
         '- prototype_kind: string. Use "static_web" unless the architecture clearly requires something else.\n'
         '- entrypoint: string path to the main prototype entry file.\n'
         "- files: array of file descriptors with path, purpose, required, and optional depends_on.\n"
-        '- notes: array of strings.\n'
+        '- notes: optional array of strings.\n'
         "For static_web prototypes, prefer a simple browser-oriented file layout.\n"
         "Keep filenames concrete and implementation-ready.\n"
         "If a fix plan is provided, prioritize it over the prior bundle.\n"
@@ -235,7 +247,9 @@ def implementation_file_user_prompt(
         f"Previous failures to fix: {json.dumps(failures, indent=2)}\n"
         f"Fix plan guidance: {json.dumps(asdict(fix_plan), indent=2) if fix_plan else 'null'}\n"
         f"{memory_block}"
-        "Return JSON with path, content, and notes.\n"
+        "Write the smallest directly functional version of this file that still supports the requested prototype behavior.\n"
+        "Avoid helper sprawl or placeholder abstractions unless this specific file truly needs them.\n"
+        "Return JSON with path, content, and optional notes.\n"
         "The path must exactly match the target file path.\n"
         "For a static_web prototype:\n"
         "- the HTML entrypoint must include the product title and a 'Feature Breakdown' section\n"
