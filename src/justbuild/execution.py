@@ -75,7 +75,11 @@ def run_pytest_validation(pytest_bin: str) -> tuple[list[str], list[str], list[F
     return results, skipped, failures
 
 
-def run_node_validation(prototype_dir: Path, node_bin: str) -> tuple[list[str], list[str], list[FailureReport]]:
+def run_node_validation(
+    prototype_dir: Path,
+    node_bin: str,
+    script_path: str = "app.js",
+) -> tuple[list[str], list[str], list[FailureReport]]:
     results: list[str] = []
     skipped: list[str] = []
     failures: list[FailureReport] = []
@@ -84,7 +88,7 @@ def run_node_validation(prototype_dir: Path, node_bin: str) -> tuple[list[str], 
         skipped.append(f"SKIP: node binary not found -> {node_bin}")
         return results, skipped, failures
 
-    harness_path = _write_node_harness(prototype_dir)
+    harness_path = _write_node_harness(prototype_dir, script_path)
     try:
         completed = subprocess.run(
             [node_bin, str(harness_path)],
@@ -100,7 +104,7 @@ def run_node_validation(prototype_dir: Path, node_bin: str) -> tuple[list[str], 
             failures.append(
                 FailureReport(
                     source="node-exec",
-                    summary="Node execution failed for prototype app.js",
+                    summary=f"Node execution failed for prototype script {script_path}",
                     details=[completed.stdout.strip(), completed.stderr.strip()],
                 )
             )
@@ -171,6 +175,7 @@ def run_playwright_validation(
     prototype_dir: Path,
     expected_title: str,
     enabled: bool,
+    entrypoint: str = "index.html",
 ) -> tuple[list[str], list[str], list[FailureReport]]:
     results: list[str] = []
     skipped: list[str] = []
@@ -192,7 +197,7 @@ def run_playwright_validation(
 
     page_errors: list[str] = []
     console_errors: list[str] = []
-    index_url = (prototype_dir / "index.html").resolve().as_uri()
+    index_url = (prototype_dir / entrypoint).resolve().as_uri()
     try:
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch()
@@ -249,8 +254,8 @@ def run_playwright_validation(
     return results, skipped, failures
 
 
-def _write_node_harness(prototype_dir: Path) -> Path:
-    harness = r"""
+def _write_node_harness(prototype_dir: Path, script_path: str) -> Path:
+    harness = """
 function createElement() {
   return {
     className: "",
@@ -286,13 +291,13 @@ global.window = { document: global.document };
 global.navigator = { userAgent: "node" };
 
 try {
-  require("./app.js");
+  require("./__SCRIPT_PATH__");
   process.stdout.write("JUSTBUILD_NODE_HARNESS_OK");
 } catch (error) {
   console.error(error && error.stack ? error.stack : String(error));
   process.exit(1);
 }
-"""
+""".replace("__SCRIPT_PATH__", script_path)
     fd, temp_path = tempfile.mkstemp(prefix="justbuild-node-harness-", suffix=".js", dir=prototype_dir)
     os.close(fd)
     path = Path(temp_path)

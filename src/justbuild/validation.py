@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .models import ArchitecturePlan, ArchitectureReview, EvaluationReport, FailureReport, FixPlan, ProductSpecification
+from .models import ArchitecturePlan, ArchitectureReview, EvaluationReport, FailureReport, FixPlan, ImplementationPlan, ImplementationPlanFile, ProductSpecification
 
 
 class JSONValidationError(ValueError):
@@ -119,21 +119,50 @@ def parse_architecture_review(raw_text: str) -> ArchitectureReview:
     )
 
 
-def parse_implementation_bundle(raw_text: str) -> tuple[list[str], dict[str, str]]:
+def parse_implementation_plan(raw_text: str) -> ImplementationPlan:
     payload = parse_json_object(raw_text)
-    require_keys(payload, ["notes", "files"])
+    require_keys(payload, ["prototype_kind", "entrypoint", "files", "notes"])
+    prototype_kind = normalize_text(payload["prototype_kind"], "prototype_kind")
+    entrypoint = normalize_text(payload["entrypoint"], "entrypoint")
     notes = normalize_string_list(payload["notes"], "notes")
     files_value = payload["files"]
-    if not isinstance(files_value, dict):
-        raise JSONValidationError("Field 'files' must be an object")
+    if not isinstance(files_value, list) or not files_value:
+        raise JSONValidationError("Field 'files' must be a non-empty list of file descriptors")
 
-    required_files = ["index.html", "styles.css", "app.js", "README.md"]
-    file_bundle: dict[str, str] = {}
-    for file_name in required_files:
-        if file_name not in files_value:
-            raise JSONValidationError(f"Implementation bundle is missing file '{file_name}'")
-        file_bundle[file_name] = normalize_text(files_value[file_name], f"files.{file_name}")
-    return notes, file_bundle
+    files: list[ImplementationPlanFile] = []
+    seen_paths: set[str] = set()
+    for index, item in enumerate(files_value):
+        if not isinstance(item, dict):
+            raise JSONValidationError(f"Field 'files[{index}]' must be an object")
+        require_keys(item, ["path", "purpose", "required"])
+        path = normalize_text(item["path"], f"files[{index}].path")
+        if path in seen_paths:
+            raise JSONValidationError(f"Implementation plan contains duplicate file path '{path}'")
+        seen_paths.add(path)
+        purpose = normalize_text(item["purpose"], f"files[{index}].purpose")
+        required = item["required"]
+        if not isinstance(required, bool):
+            raise JSONValidationError(f"Field 'files[{index}].required' must be a boolean")
+        depends_on = normalize_string_list(item.get("depends_on", []), f"files[{index}].depends_on")
+        files.append(
+            ImplementationPlanFile(
+                path=path,
+                purpose=purpose,
+                required=required,
+                depends_on=depends_on,
+            )
+        )
+    return ImplementationPlan(prototype_kind=prototype_kind, entrypoint=entrypoint, files=files, notes=notes)
+
+
+def parse_implementation_file(raw_text: str) -> tuple[str, str, list[str]]:
+    payload = parse_json_object(raw_text)
+    require_keys(payload, ["path", "content", "notes"])
+    return (
+        normalize_text(payload["path"], "path"),
+        normalize_text(payload["content"], "content"),
+        normalize_string_list(payload["notes"], "notes"),
+    )
 
 
 def parse_testing_plan(raw_text: str) -> tuple[list[str], list[str], list[str]]:

@@ -43,6 +43,7 @@ class TestingAgent(BaseAgent):
             raise ValueError("Implementation artifacts are required before testing.")
 
         prototype_dir = implementation.prototype_dir
+        implementation_plan = implementation.implementation_plan
         unit_results: list[str] = []
         integration_results: list[str] = []
         llm_checks: list[str] = []
@@ -85,7 +86,8 @@ class TestingAgent(BaseAgent):
                 metadata={"prompt_type": "testing", "error": str(exc)},
             )
 
-        expected_files = ["index.html", "styles.css", "app.js", "README.md"]
+        planned_files = implementation_plan.files if implementation_plan is not None else []
+        expected_files = [file_spec.path for file_spec in planned_files if file_spec.required] or list(implementation.file_bundle.keys())
         for file_name in expected_files:
             path = prototype_dir / file_name
             if path.exists():
@@ -99,23 +101,35 @@ class TestingAgent(BaseAgent):
                     )
                 )
 
-        self._assert_contains(prototype_dir / "index.html", spec.title, "HTML includes product title", unit_results, failure_reports)
-        self._assert_contains(prototype_dir / "index.html", "Feature Breakdown", "HTML includes feature section", unit_results, failure_reports)
-        self._assert_contains(prototype_dir / "app.js", "Generated Response", "JS includes result rendering flow", integration_results, failure_reports)
-        self._assert_contains(prototype_dir / "styles.css", ":root", "CSS theme tokens exist", integration_results, failure_reports)
+        if implementation_plan is not None and implementation_plan.prototype_kind == "static_web":
+            entrypoint = prototype_dir / implementation_plan.entrypoint
+            self._assert_contains(entrypoint, spec.title, "HTML includes product title", unit_results, failure_reports)
+            self._assert_contains(entrypoint, "Feature Breakdown", "HTML includes feature section", unit_results, failure_reports)
+            js_file = self._first_matching_file(planned_files, ".js")
+            css_file = self._first_matching_file(planned_files, ".css")
+            if js_file is not None:
+                self._assert_contains(prototype_dir / js_file, "Generated Response", "JS includes result rendering flow", integration_results, failure_reports)
+            if css_file is not None:
+                self._assert_contains(prototype_dir / css_file, ":root", "CSS theme tokens exist", integration_results, failure_reports)
 
         max_workers = max(1, self.context.request.max_workers)
+        node_script = self._first_matching_file(planned_files, ".js")
+        entrypoint = implementation_plan.entrypoint if implementation_plan is not None else None
         parallel_tasks = {
             "api_schema": lambda: validate_api_contracts(spec),
-            "html_validation": lambda: validate_html_rendering(prototype_dir / "index.html", spec.title),
             "pytest_validation": lambda: run_pytest_validation(self.context.request.pytest_bin),
-            "node_validation": lambda: run_node_validation(prototype_dir, self.context.request.node_bin),
-            "playwright_validation": lambda: run_playwright_validation(
+        }
+        if implementation_plan is None or implementation_plan.prototype_kind == "static_web":
+            html_entrypoint = entrypoint or "index.html"
+            parallel_tasks["html_validation"] = lambda: validate_html_rendering(prototype_dir / html_entrypoint, spec.title)
+            if node_script is not None:
+                parallel_tasks["node_validation"] = lambda: run_node_validation(prototype_dir, self.context.request.node_bin, node_script)
+            parallel_tasks["playwright_validation"] = lambda: run_playwright_validation(
                 prototype_dir=prototype_dir,
                 expected_title=spec.title,
                 enabled=self.context.request.enable_playwright,
-            ),
-        }
+                entrypoint=html_entrypoint,
+            )
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             for task in run_parallel(executor, parallel_tasks):
                 self.logger.log(
@@ -194,3 +208,9 @@ class TestingAgent(BaseAgent):
                     details=[f'Missing token "{needle}" in {path.name}.'],
                 )
             )
+
+    def _first_matching_file(self, files, suffix: str) -> str | None:
+        for file_spec in files:
+            if file_spec.path.endswith(suffix):
+                return file_spec.path
+        return None

@@ -51,8 +51,18 @@ class MultiAgentSystemTests(unittest.TestCase):
             return "architecture_review"
         if "architecture agent" in lowered:
             return "architecture_plan"
-        if "implementation agent" in lowered:
-            return "implementation"
+        if "implementation planning agent" in lowered:
+            return "implementation_plan"
+        if "implementation file agent" in lowered:
+            marker = "Target file path: "
+            if marker in request_payload.get("messages", [{}])[-1].get("content", ""):
+                prompt = request_payload["messages"][-1]["content"]
+            else:
+                prompt = request_payload.get("messages", [{}])[-1].get("content", "")
+            if marker in prompt:
+                target_path = prompt.split(marker, 1)[1].splitlines()[0].strip()
+                return f"implementation_file:{target_path}"
+            return "implementation_file"
         if "testing agent" in lowered:
             return "testing"
         if "debugging agent" in lowered:
@@ -96,6 +106,34 @@ class MultiAgentSystemTests(unittest.TestCase):
 
         return _responder
 
+    def _anthropic_plan_notes_only_then_repair_notes_only_responder(self, responses: dict[str, str]):
+        call_count = {"implementation_plan": 0}
+
+        def _responder(request_obj, *args, **kwargs):
+            payload = json.loads(request_obj.data.decode("utf-8"))
+            key = self._classify_provider_prompt(payload)
+            if key == "implementation_plan":
+                call_count["implementation_plan"] += 1
+                if call_count["implementation_plan"] <= 2:
+                    content = {"notes": ["Only notes returned."]}
+                else:
+                    content = json.loads(responses[key])
+            else:
+                content = json.loads(responses[key])
+            return self._MockHTTPResponse(
+                {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "justbuild_response",
+                            "input": content,
+                        }
+                    ]
+                }
+            )
+
+        return _responder
+
     def _openai_compatible_missing_key_then_repair_responder(self, responses: dict[str, str], target_key: str):
         call_count = {"count": 0}
 
@@ -108,7 +146,8 @@ class MultiAgentSystemTests(unittest.TestCase):
                 partial.pop(target_key, None)
                 return self._MockHTTPResponse({"choices": [{"message": {"content": json.dumps(partial)}}]})
             if call_count["count"] == 2:
-                return self._MockHTTPResponse({"choices": [{"message": {"content": responses["architecture_plan"]}}]})
+                key = self._classify_provider_prompt(payload)
+                return self._MockHTTPResponse({"choices": [{"message": {"content": responses[key]}}]})
             key = self._classify_provider_prompt(payload)
             return self._MockHTTPResponse({"choices": [{"message": {"content": responses[key]}}]})
 
@@ -231,10 +270,7 @@ class MultiAgentSystemTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             base = default_responses()
             responses = dict(base)
-            responses["implementation"] = [
-                '{"notes": ["broken"], "files": {"index.html": "missing rest"}}',
-                base["implementation"],
-            ]
+            responses["implementation_plan"] = ['{"notes": ["broken"]}']
             orchestrator = OrchestratorAgent(
                 product_idea="Planning assistant",
                 output_root=Path(tmp_dir),
@@ -246,8 +282,9 @@ class MultiAgentSystemTests(unittest.TestCase):
             context = orchestrator.run()
 
             self.assertTrue(context.testing.passed)
-            implementation_milestone = next(item for item in context.milestones if item.name == "Implementation")
-            self.assertGreaterEqual(implementation_milestone.retries, 1)
+            self.assertIsNotNone(context.implementation.implementation_plan)
+            self.assertEqual(context.implementation.implementation_plan.prototype_kind, "static_web")
+            self.assertIn("Defaulted to the static_web prototype profile.", context.implementation.notes)
 
     def test_debugging_agent_returns_fix_plan(self) -> None:
         context = BuildContext(
@@ -287,17 +324,16 @@ class MultiAgentSystemTests(unittest.TestCase):
     def test_failed_testing_triggers_debugging_and_records_fix_plan(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             base = default_responses()
-            broken_implementation = (
-                '{"notes":["Broken implementation"],'
-                '"files":{"index.html":"<!DOCTYPE html><html><body><h1>Collaborative roadmap planner</h1></body></html>",'
-                '"styles.css":":root { --accent: #0d6f63; }",'
-                '"app.js":"console.log(\\"missing flow\\");",'
-                '"README.md":"# Collaborative roadmap planner\\n"}}'
-            )
             responses = dict(base)
-            responses["implementation"] = [
-                broken_implementation,
-                base["implementation"],
+            responses["implementation_file:app.js"] = [
+                json.dumps(
+                    {
+                        "path": "app.js",
+                        "content": "console.log('missing flow');",
+                        "notes": ["Generated a broken JS file for the first pass."],
+                    }
+                ),
+                base["implementation_file:app.js"],
             ]
             responses["debugging"] = debugging_response(failure_groups=["content_mismatch"])
             context = OrchestratorAgent(
@@ -471,6 +507,34 @@ class MultiAgentSystemTests(unittest.TestCase):
             self.assertTrue(context.testing.passed)
             self.assertIsNotNone(context.evaluation)
             self.assertTrue((context.implementation.prototype_dir / "index.html").exists())
+
+    def test_anthropic_notes_only_implementation_plan_falls_back_to_static_web_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            responses = default_responses()
+            llm_client = LLMClient(
+                provider="anthropic",
+                model="claude-test",
+                api_key="secret",
+            )
+            with patch(
+                "urllib.request.urlopen",
+                side_effect=self._anthropic_plan_notes_only_then_repair_notes_only_responder(responses),
+            ):
+                context = OrchestratorAgent(
+                    product_idea="Collaborative roadmap planner for product teams",
+                    output_root=Path(tmp_dir),
+                    llm_client=llm_client,
+                    node_bin="missing-node",
+                    pytest_bin="missing-pytest",
+                    memory_path=Path(tmp_dir) / "build_memory.json",
+                ).run()
+
+            self.assertTrue(context.testing.passed)
+            self.assertIsNotNone(context.implementation.implementation_plan)
+            self.assertEqual(context.implementation.implementation_plan.prototype_kind, "static_web")
+            self.assertIn("Defaulted to the static_web prototype profile.", context.implementation.notes)
+            events_log = context.events_log_path.read_text(encoding="utf-8")
+            self.assertIn("implementation_fallback", events_log)
 
     def test_architecture_missing_key_is_repaired_end_to_end(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

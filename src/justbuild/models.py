@@ -101,6 +101,21 @@ class ArchitectureReview:
     retry_guidance: list[str]
     requires_refinement: bool
 
+@dataclass(slots=True)
+class ImplementationPlanFile:
+    path: str
+    purpose: str
+    required: bool
+    depends_on: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class ImplementationPlan:
+    prototype_kind: str
+    entrypoint: str
+    files: list[ImplementationPlanFile]
+    notes: list[str] = field(default_factory=list)
+
 # Separates Spec-> Architecture-> Implementation. This takes the ArchitecturePlan and tracks the actual output of the coding agent.
 @dataclass(slots=True)
 class ImplementationArtifacts:
@@ -108,6 +123,7 @@ class ImplementationArtifacts:
     generated_files: list[Path] = field(default_factory=list) # List of files generated.
     notes: list[str] = field(default_factory=list)
     file_bundle: dict[str, str] = field(default_factory=dict)
+    implementation_plan: ImplementationPlan | None = None
 
 
 @dataclass(slots=True)

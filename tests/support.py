@@ -62,8 +62,14 @@ class FakeLLMClient:
             return "architecture_review"
         if "architecture agent" in system:
             return "architecture_plan"
-        if "implementation agent" in system:
-            return "implementation"
+        if "implementation planning agent" in system:
+            return "implementation_plan"
+        if "implementation file agent" in system:
+            marker = "Target file path: "
+            if marker in prompt:
+                target_path = prompt.split(marker, 1)[1].splitlines()[0].strip()
+                return f"implementation_file:{target_path}"
+            return "implementation_file"
         if "testing agent" in system:
             return "testing"
         if "debugging agent" in system:
@@ -169,17 +175,47 @@ def default_responses() -> dict[str, str]:
                 "requires_refinement": False,
             }
         ),
-        "implementation": json.dumps(
+        "implementation_plan": json.dumps(
             {
+                "prototype_kind": "static_web",
+                "entrypoint": "index.html",
                 "notes": [
-                    "Generated a browser prototype from the LLM output.",
+                    "Generate a simple browser prototype with a small static asset set.",
                 ],
-                "files": {
-                    "index.html": "<!DOCTYPE html><html><body><h1>Collaborative roadmap planner</h1><section><h2>Feature Breakdown</h2></section><script src=\"./app.js\"></script></body></html>",
-                    "styles.css": ":root { --accent: #0d6f63; } body { margin: 0; }",
-                    "app.js": "document.body.dataset.ready = 'true'; const message = 'Generated Response';",
-                    "README.md": "# Collaborative roadmap planner\n\nOpen index.html in a browser.\n",
-                },
+                "files": [
+                    {"path": "index.html", "purpose": "Browser entrypoint for the prototype UI.", "required": True},
+                    {"path": "styles.css", "purpose": "Shared styling for the prototype UI.", "required": True},
+                    {"path": "app.js", "purpose": "Client-side interaction logic.", "required": True, "depends_on": ["index.html"]},
+                    {"path": "README.md", "purpose": "Instructions for opening the prototype.", "required": True},
+                ],
+            }
+        ),
+        "implementation_file:index.html": json.dumps(
+            {
+                "path": "index.html",
+                "content": "<!DOCTYPE html><html><body><h1>Collaborative roadmap planner</h1><section><h2>Feature Breakdown</h2></section><script src=\"./app.js\"></script></body></html>",
+                "notes": ["Created the primary browser entrypoint."],
+            }
+        ),
+        "implementation_file:styles.css": json.dumps(
+            {
+                "path": "styles.css",
+                "content": ":root { --accent: #0d6f63; } body { margin: 0; }",
+                "notes": ["Created the shared theme stylesheet."],
+            }
+        ),
+        "implementation_file:app.js": json.dumps(
+            {
+                "path": "app.js",
+                "content": "document.body.dataset.ready = 'true'; const message = 'Generated Response';",
+                "notes": ["Created the browser interaction logic."],
+            }
+        ),
+        "implementation_file:README.md": json.dumps(
+            {
+                "path": "README.md",
+                "content": "# Collaborative roadmap planner\n\nOpen index.html in a browser.\n",
+                "notes": ["Documented how to run the prototype."],
             }
         ),
         "testing": json.dumps(

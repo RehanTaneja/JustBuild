@@ -4,7 +4,7 @@ import json
 from dataclasses import asdict
 
 from .memory import build_memory_prompt_context
-from .models import ArchitecturePlan, ArchitectureReview, BuildMemory, FailureReport, FixPlan, ImplementationArtifacts, ProductSpecification, TestResult
+from .models import ArchitecturePlan, ArchitectureReview, BuildMemory, FailureReport, FixPlan, ImplementationPlan, ProductSpecification, TestResult
 
 
 SPECIFICATION_SCHEMA = {
@@ -34,9 +34,14 @@ ARCHITECTURE_SCHEMA = {
     ],
 }
 
-IMPLEMENTATION_SCHEMA = {
+IMPLEMENTATION_PLAN_SCHEMA = {
     "type": "object",
-    "required": ["notes", "files"],
+    "required": ["prototype_kind", "entrypoint", "files", "notes"],
+}
+
+IMPLEMENTATION_FILE_SCHEMA = {
+    "type": "object",
+    "required": ["path", "content", "notes"],
 }
 
 TESTING_SCHEMA = {
@@ -156,8 +161,16 @@ def architecture_review_user_prompt(
 
 def implementation_system_prompt() -> str:
     return (
-        "You are the JustBuild implementation agent. Return valid JSON only. "
-        "Generate a static browser prototype file bundle with production-style structure. "
+        "You are the JustBuild implementation planning agent. Return valid JSON only. "
+        "Plan a concrete prototype file layout that implementation can generate file by file. "
+        "All required keys must be present. Never omit a required key. "
+        "Do not rename keys. Output exactly one JSON object."
+    )
+
+def implementation_file_system_prompt() -> str:
+    return (
+        "You are the JustBuild implementation file agent. Return valid JSON only. "
+        "Generate exactly one prototype file at a time using the requested path and purpose. "
         "All required keys must be present. Never omit a required key. "
         "Do not rename keys. Output exactly one JSON object."
     )
@@ -176,20 +189,59 @@ def implementation_user_prompt(
     ]
     memory_block = _memory_prompt_block(memory)
     return (
-        "Generate a static prototype bundle for this product.\n"
+        "Create an implementation plan for this prototype.\n"
         f"Specification: {json.dumps(asdict(spec), indent=2)}\n"
         f"Architecture: {json.dumps(asdict(architecture), indent=2)}\n"
         f"Previous failures to fix: {json.dumps(failures, indent=2)}\n"
         f"Fix plan guidance: {json.dumps(asdict(fix_plan), indent=2) if fix_plan else 'null'}\n"
         f"{memory_block}"
         "Return JSON with:\n"
-        '- notes: array of strings\n'
-        '- files: object with keys index.html, styles.css, app.js, README.md\n'
-        "The HTML must include the product title and a 'Feature Breakdown' section.\n"
-        "The JS must include the phrase 'Generated Response'.\n"
-        "The CSS must include a :root block.\n"
+        '- prototype_kind: string. Use "static_web" unless the architecture clearly requires something else.\n'
+        '- entrypoint: string path to the main prototype entry file.\n'
+        "- files: array of file descriptors with path, purpose, required, and optional depends_on.\n"
+        '- notes: array of strings.\n'
+        "For static_web prototypes, prefer a simple browser-oriented file layout.\n"
+        "Keep filenames concrete and implementation-ready.\n"
         "If a fix plan is provided, prioritize it over the prior bundle.\n"
         "Include every required field even if uncertain. If an array field is uncertain, return an empty array."
+    )
+
+
+def implementation_file_user_prompt(
+    spec: ProductSpecification,
+    architecture: ArchitecturePlan,
+    implementation_plan: ImplementationPlan,
+    file_path: str,
+    file_purpose: str,
+    dependency_files: dict[str, str],
+    failure_reports: list[FailureReport] | None,
+    fix_plan: FixPlan | None = None,
+    memory: BuildMemory | None = None,
+) -> str:
+    failures = [
+        {"source": report.source, "summary": report.summary, "details": report.details}
+        for report in (failure_reports or [])
+    ]
+    dependency_block = json.dumps(dependency_files, indent=2) if dependency_files else "{}"
+    memory_block = _memory_prompt_block(memory)
+    return (
+        "Generate exactly one file for this prototype.\n"
+        f"Specification: {json.dumps(asdict(spec), indent=2)}\n"
+        f"Architecture: {json.dumps(asdict(architecture), indent=2)}\n"
+        f"Implementation plan: {json.dumps(asdict(implementation_plan), indent=2)}\n"
+        f"Target file path: {file_path}\n"
+        f"Target file purpose: {file_purpose}\n"
+        f"Already generated dependency files: {dependency_block}\n"
+        f"Previous failures to fix: {json.dumps(failures, indent=2)}\n"
+        f"Fix plan guidance: {json.dumps(asdict(fix_plan), indent=2) if fix_plan else 'null'}\n"
+        f"{memory_block}"
+        "Return JSON with path, content, and notes.\n"
+        "The path must exactly match the target file path.\n"
+        "For a static_web prototype:\n"
+        "- the HTML entrypoint must include the product title and a 'Feature Breakdown' section\n"
+        "- the main JS behavior file must include the phrase 'Generated Response'\n"
+        "- the main CSS theme file must include a :root block\n"
+        "Keep the output limited to the requested file only."
     )
 
 
