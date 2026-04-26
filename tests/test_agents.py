@@ -13,6 +13,7 @@ from justbuild.models import BuildContext, BuildRequest, FailureReport, GitHubPu
 from justbuild.observability import BuildLogger
 from justbuild.orchestrator import OrchestratorAgent
 from justbuild.publishing import GitHubPublishError
+from justbuild.workflow import ExecutionState
 from tests.support import FakeLLMClient, debugging_response, default_responses
 
 """
@@ -111,6 +112,40 @@ class MultiAgentSystemTests(unittest.TestCase):
             return self._MockHTTPResponse({"choices": [{"message": {"content": responses[key]}}]})
 
         return _responder
+
+    def _planning_refinement_responses(self) -> dict[str, object]:
+        base = default_responses()
+        first_spec = json.loads(base["specification"])
+        first_spec["missing_requirements"] = [
+            "Authentication details still need refinement.",
+            "Prototype data persistence approach is unclear.",
+            "Task filtering behavior needs explicit confirmation.",
+        ]
+        first_architecture = json.loads(base["architecture_plan"])
+        first_architecture["design_tradeoffs"] = [
+            "Favor direct service integrations for the planning draft.",
+        ]
+        retry_architecture = json.loads(base["architecture_plan"])
+        retry_architecture["database_schema"] = [""]
+        retry_architecture["design_tradeoffs"] = [
+            "Mock APIs keep the prototype fast to iterate.",
+        ]
+        return {
+            **base,
+            "specification": [
+                json.dumps(first_spec),
+                base["specification"],
+            ],
+            "architecture_plan": [
+                json.dumps(first_architecture),
+                json.dumps(retry_architecture),
+                base["architecture_plan"],
+            ],
+            "architecture_review": [
+                base["architecture_review"],
+                base["architecture_review"],
+            ],
+        }
 
     # Main pipeline test
     def test_end_to_end_build_generates_prototype_and_summary(self) -> None:
@@ -442,6 +477,64 @@ class MultiAgentSystemTests(unittest.TestCase):
 
             self.assertTrue(context.testing.passed)
             self.assertEqual(context.architecture.justification, ["The build remains easy to test and inspect."])
+
+    def test_planning_refinement_with_architecture_retry_reaches_implementation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            context = OrchestratorAgent(
+                product_idea="Simple task tracker web app",
+                output_root=Path(tmp_dir),
+                llm_client=FakeLLMClient(responses=self._planning_refinement_responses()),
+                node_bin="missing-node",
+                pytest_bin="missing-pytest",
+                memory_path=Path(tmp_dir) / "build_memory.json",
+            ).run()
+
+            self.assertEqual(context.workflow_terminal_state, "completed")
+            self.assertIsNotNone(context.implementation)
+            self.assertIsNotNone(context.testing)
+            self.assertTrue(context.testing.passed)
+            self.assertTrue(context.build_summary_path.exists())
+            self.assertTrue(context.final_report_path.exists())
+            node_ids = [run.node_id for run in context.node_runs]
+            self.assertIn("implementation", node_ids)
+            self.assertIn("persist_outputs", node_ids)
+            planning_runs = [run for run in context.node_runs if run.node_id == "planning_refinement_gate"]
+            self.assertEqual(len(planning_runs), 2)
+            architecture_runs = [run for run in context.node_runs if run.node_id == "architecture_plan"]
+            self.assertTrue(any(run.status == "failed" for run in architecture_runs))
+            self.assertEqual(architecture_runs[-1].status, "completed")
+
+    def test_runtime_integrity_failure_is_persisted_for_lost_activation(self) -> None:
+        original_enqueue = ExecutionState.enqueue
+
+        def corrupted_enqueue(self: ExecutionState, node_id: str) -> None:
+            if node_id == "implementation":
+                self.activated_nodes.add(node_id)
+                return
+            original_enqueue(self, node_id)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            orchestrator = OrchestratorAgent(
+                product_idea="Integrity failure case",
+                output_root=Path(tmp_dir),
+                llm_client=FakeLLMClient(responses=default_responses()),
+                node_bin="missing-node",
+                pytest_bin="missing-pytest",
+                memory_path=Path(tmp_dir) / "build_memory.json",
+            )
+
+            with patch.object(ExecutionState, "enqueue", new=corrupted_enqueue):
+                with self.assertRaises(ValueError) as error_context:
+                    orchestrator.run()
+
+            self.assertIn("Workflow integrity failure", str(error_context.exception))
+            self.assertIsNotNone(orchestrator.context.partial_summary_path)
+            partial_payload = json.loads(orchestrator.context.partial_summary_path.read_text(encoding="utf-8"))
+            self.assertEqual(partial_payload["last_failure"]["error_type"], "workflow_integrity")
+            self.assertEqual(partial_payload["workflow_terminal_state"], "failed_blocking")
+            events_log = orchestrator.context.events_log_path.read_text(encoding="utf-8")
+            self.assertIn("workflow_integrity_failure", events_log)
+            self.assertIn("implementation", events_log)
 
     def test_publish_failure_does_not_fail_build(self) -> None:
         class FailingPublisher:

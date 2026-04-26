@@ -18,7 +18,7 @@ from .observability import BuildLogger, initialize_run_artifacts, write_build_su
 from .publishing import GitHubPublisher
 from .prototype import slugify
 from .reporting import write_final_report
-from .workflow import ExecutionState, NodeResult, RetryPolicy, TerminalState, WorkflowEdge, WorkflowGraph, WorkflowNode, WorkflowRuntime
+from .workflow import ExecutionState, NodeResult, RetryPolicy, TerminalState, WorkflowEdge, WorkflowGraph, WorkflowIntegrityError, WorkflowNode, WorkflowRuntime
 
 """
 This is the brain or the pipeline manager. It:
@@ -112,10 +112,26 @@ class OrchestratorAgent:
         self.context.node_runs = []
         self.context.workflow_terminal_state = None
         self.context.github_publish = GitHubPublishResult(enabled=False, published=False)
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            runtime = WorkflowRuntime(executor, logger=self.logger)
-            graph = self._build_workflow_graph()
-            state = runtime.run(graph, self.context, max_workers=self.max_workers)
+        try:
+            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                runtime = WorkflowRuntime(executor, logger=self.logger)
+                graph = self._build_workflow_graph()
+                state = runtime.run(graph, self.context, max_workers=self.max_workers)
+        except WorkflowIntegrityError as exc:
+            self.context.workflow_terminal_state = TerminalState.FAILED_BLOCKING.value
+            self.context.last_failure = self.context.last_failure or {
+                "failed_node": None,
+                "error": str(exc),
+                "error_type": "workflow_integrity",
+            }
+            self.logger.emit_event(
+                category="build_failure",
+                message=f"Build failed. See {self.context.text_log_path} and {self.context.events_log_path}",
+                metadata=self.context.last_failure,
+                agent=self.name,
+            )
+            write_partial_summary(self.context)
+            raise ValueError(str(exc)) from exc
         if state.terminal_state == TerminalState.FAILED_BLOCKING:
             last_error = next((run.error for run in reversed(self.context.node_runs) if getattr(run, "error", None)), "Workflow execution failed.")
             self.context.last_failure = {

@@ -13,6 +13,10 @@ from .models import BuildContext, TaskStatus
 from .observability import write_partial_summary
 
 
+class WorkflowIntegrityError(RuntimeError):
+    """Raised when the workflow runtime loses track of activated nodes or reaches an impossible state."""
+
+
 class NodeStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
@@ -87,6 +91,7 @@ class ExecutionState:
     node_attempts: dict[str, int] = field(default_factory=dict)
     active_queue: deque[str] = field(default_factory=deque)
     active_set: set[str] = field(default_factory=set)
+    activated_nodes: set[str] = field(default_factory=set)
     terminal_state: TerminalState | None = None
     data: dict[str, Any] = field(default_factory=dict)
 
@@ -95,6 +100,7 @@ class ExecutionState:
             return
         self.active_queue.append(node_id)
         self.active_set.add(node_id)
+        self.activated_nodes.add(node_id)
 
     def dequeue(self, node_id: str) -> None:
         self.active_set.discard(node_id)
@@ -103,6 +109,7 @@ class ExecutionState:
         self.node_statuses[node_id] = NodeStatus.PENDING
         self.node_attempts[node_id] = 0
         self.active_set.discard(node_id)
+        self.active_queue = deque(queued for queued in self.active_queue if queued != node_id)
 
 
 class WorkflowRuntime:
@@ -118,6 +125,7 @@ class WorkflowRuntime:
         for node_id in graph.entry_nodes:
             state.enqueue(node_id)
             self._emit("workflow_queue", f"Queued entry node {node_id}", {"node_id": node_id})
+        self._assert_queue_invariant(state)
 
         while state.active_queue and state.terminal_state is None:
             ready_nodes: list[str] = []
@@ -125,9 +133,11 @@ class WorkflowRuntime:
 
             while state.active_queue:
                 node_id = state.active_queue.popleft()
+                state.active_set.discard(node_id)
                 node = graph.nodes[node_id]
                 if not self._dependencies_completed(node, state):
                     pending_nodes.append(node_id)
+                    self._emit("workflow_deferred", f"Deferred {node_id}", {"node_id": node_id, "dependencies": list(node.dependencies)})
                     continue
                 if node.condition is not None and not node.condition(context, state):
                     state.node_statuses[node_id] = NodeStatus.SKIPPED
@@ -148,6 +158,7 @@ class WorkflowRuntime:
 
             for node_id in pending_nodes:
                 state.enqueue(node_id)
+            self._assert_queue_invariant(state)
 
             if not ready_nodes:
                 if state.active_queue:
@@ -181,10 +192,16 @@ class WorkflowRuntime:
                         )
                         write_partial_summary(context)
                         state.enqueue(node_id)
+                        self._assert_queue_invariant(state)
                         continue
                     state.node_statuses[node_id] = NodeStatus.FAILED
                     self._update_milestone_failure(context, graph.nodes[node_id].milestone_name, payload["exception"])
-                    context.last_failure = {"failed_node": node_id, "attempt": record.attempt, "error": payload["exception"]}
+                    context.last_failure = {
+                        "failed_node": node_id,
+                        "attempt": record.attempt,
+                        "error": payload["exception"],
+                        "error_type": "workflow_node_failure",
+                    }
                     self._emit("workflow_failure", f"Failed {node_id}", {"node_id": node_id, "attempt": record.attempt, "error": payload["exception"]})
                     write_partial_summary(context)
                     state.terminal_state = TerminalState.FAILED_BLOCKING
@@ -201,8 +218,29 @@ class WorkflowRuntime:
                 if node_result.terminal_state is not None:
                     state.terminal_state = node_result.terminal_state
                 write_partial_summary(context)
+                self._assert_queue_invariant(state)
 
         if state.terminal_state is None:
+            pending_activated = self._pending_activated_nodes(state)
+            if pending_activated:
+                details = {
+                    "pending_nodes": pending_activated,
+                    "active_queue": list(state.active_queue),
+                    "active_set": sorted(state.active_set),
+                }
+                context.last_failure = {
+                    "failed_node": pending_activated[0],
+                    "error": "Workflow integrity failure: activated nodes remained pending after the queue drained.",
+                    "error_type": "workflow_integrity",
+                    **details,
+                }
+                self._emit(
+                    "workflow_integrity_failure",
+                    "Workflow integrity failure: activated nodes remained pending after the queue drained.",
+                    details,
+                )
+                write_partial_summary(context)
+                raise WorkflowIntegrityError(context.last_failure["error"])
             state.terminal_state = TerminalState.COMPLETED
         context.workflow_terminal_state = state.terminal_state.value
         write_partial_summary(context)
@@ -253,6 +291,37 @@ class WorkflowRuntime:
                 milestone.status = TaskStatus.FAILED
                 milestone.metadata.update({"error": error})
                 return
+
+    def _pending_activated_nodes(self, state: ExecutionState) -> list[str]:
+        terminal_record_counts: dict[str, int] = {}
+        for run in state.context.node_runs:
+            if run.status in {
+                NodeStatus.COMPLETED.value,
+                NodeStatus.FAILED.value,
+                NodeStatus.SKIPPED.value,
+            }:
+                terminal_record_counts[run.node_id] = terminal_record_counts.get(run.node_id, 0) + 1
+
+        pending_nodes: list[str] = []
+        for node_id in sorted(state.activated_nodes):
+            node = state.graph.nodes[node_id]
+            if node.condition is not None and not node.condition(state.context, state):
+                continue
+            attempts = state.node_attempts.get(node_id, 0)
+            terminal_records = terminal_record_counts.get(node_id, 0)
+            if attempts == 0 and state.node_statuses.get(node_id) == NodeStatus.PENDING:
+                pending_nodes.append(node_id)
+                continue
+            if attempts > terminal_records:
+                pending_nodes.append(node_id)
+        return pending_nodes
+
+    def _assert_queue_invariant(self, state: ExecutionState) -> None:
+        queued_nodes = set(state.active_queue)
+        if queued_nodes != state.active_set:
+            raise WorkflowIntegrityError(
+                "Workflow integrity failure: active queue and active set diverged."
+            )
 
     def _emit(self, category: str, message: str, metadata: dict[str, Any]) -> None:
         if self.logger is None:

@@ -122,8 +122,10 @@ class BuildLogger:
             "workflow_queue",
             "workflow_start",
             "workflow_complete",
+            "workflow_deferred",
             "workflow_retry",
             "workflow_failure",
+            "workflow_integrity_failure",
             "llm_failure",
             "llm_timeout",
             "schema_repair",
@@ -146,8 +148,14 @@ class BuildLogger:
             return f"Completed {metadata.get('node_id', 'step')}"
         if category == "workflow_retry":
             return f"Retrying {metadata.get('node_id', 'step')} ({metadata.get('attempt')}/{metadata.get('max_attempts')})"
+        if category == "workflow_deferred":
+            return f"Deferred {metadata.get('node_id', 'step')} until dependencies are ready"
         if category == "workflow_failure":
             return f"Failed {metadata.get('node_id', 'step')}: {metadata.get('error', message)}"
+        if category == "workflow_integrity_failure":
+            pending = metadata.get("pending_nodes") or []
+            suffix = f" Pending nodes: {', '.join(pending)}" if pending else ""
+            return f"{message}{suffix}"
         if category == "llm_timeout":
             return message
         if category == "schema_repair":

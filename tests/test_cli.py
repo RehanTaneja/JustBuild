@@ -11,6 +11,7 @@ from unittest.mock import patch
 from justbuild.cli import main
 from justbuild.llm import LLMConfigurationError
 from justbuild.models import GitHubPublishResult
+from justbuild.workflow import ExecutionState
 from tests.support import FakeLLMClient
 
 """
@@ -205,6 +206,42 @@ class CLITests(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["llm_backend"]["timeout_s"], 120)
+
+    def test_cli_runtime_integrity_failure_reports_logs_and_no_success_payload(self) -> None:
+        original_enqueue = ExecutionState.enqueue
+
+        def corrupted_enqueue(self: ExecutionState, node_id: str) -> None:
+            if node_id == "implementation":
+                self.activated_nodes.add(node_id)
+                return
+            original_enqueue(self, node_id)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            stdout = StringIO()
+            stderr = StringIO()
+            with patch.object(ExecutionState, "enqueue", new=corrupted_enqueue), patch("sys.stdout", stdout), patch("sys.stderr", stderr), patch("justbuild.cli.LLMClient", FakeLLMClient):
+                exit_code = main(
+                    [
+                        "Integrity failure test",
+                        "--output-root",
+                        str(Path(tmp_dir)),
+                        "--provider",
+                        "openai",
+                        "--model",
+                        "gpt-test",
+                        "--api-key",
+                        "test-key",
+                        "--node-bin",
+                        "missing-node",
+                        "--pytest-bin",
+                        "missing-pytest",
+                    ]
+                )
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("Build failed. See", stderr.getvalue())
+        self.assertIn("Workflow integrity failure", stderr.getvalue())
 
 
 if __name__ == "__main__":
