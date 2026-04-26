@@ -130,12 +130,6 @@ def main(argv: list[str] | None = None) -> int:
         "passed": context.testing.passed if context.testing else False,
         "iterations": len(context.iterations),
         "workflow_terminal_state": context.workflow_terminal_state,
-        "roadmap": [
-            "Replace mocked API seams with real service implementations.",
-            "Add persistent storage and authentication.",
-            "Move execution into distributed workers with durable state.",
-            "Introduce policy, security, and human approval gates for risky changes.",
-        ],
         "slug": slugify(args.idea),
     } # This is the clean summary output.
     print(json.dumps(payload, indent=2))

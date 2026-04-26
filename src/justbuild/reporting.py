@@ -72,15 +72,6 @@ def write_final_report(context: BuildContext) -> Path:
 ## Technical Debt
 
 {_render_bullets(evaluation.technical_debt if evaluation else ["No technical debt report available."])}
-
-## Next Iteration Roadmap
-
-{_render_bullets([
-    "Replace mock API seams with real backend services and persistence.",
-    "Add authentication, authorization, and audit controls for production usage.",
-    "Move orchestration into a durable queue-backed workflow runtime.",
-    "Introduce browser automation, static analysis, and security scanning gates.",
-])}
 """
     path.write_text(report, encoding="utf-8")
     context.final_report_path = path

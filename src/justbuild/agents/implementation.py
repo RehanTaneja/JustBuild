@@ -213,6 +213,7 @@ class ImplementationAgent(BaseAgent):
             memory=self.context.memory,
         )
         system_prompt = implementation_file_system_prompt()
+        response: str | None = None
         try:
             response = self.llm.generate(prompt, system_prompt=system_prompt, response_schema=IMPLEMENTATION_FILE_SCHEMA)
             generated_path, content, notes = parse_implementation_file(response)
@@ -230,6 +231,16 @@ class ImplementationAgent(BaseAgent):
             )
             return generated_path, content, notes
         except (LLMError, JSONValidationError, ValueError) as exc:
+            if self._should_accept_raw_readme(file_spec.path, response, exc):
+                self.logger.log(
+                    self.name,
+                    f"Accepted raw markdown content for {file_spec.path}",
+                    "implementation_fallback",
+                    iteration,
+                    0,
+                    metadata={"file_path": file_spec.path, "reason": str(exc)},
+                )
+                return file_spec.path, response, ["Accepted raw markdown README content from the LLM."]
             self.logger.log(
                 self.name,
                 f"Implementation file generation failed for {file_spec.path}",
@@ -239,3 +250,12 @@ class ImplementationAgent(BaseAgent):
                 metadata={"prompt_type": "implementation_file", "file_path": file_spec.path, "error": str(exc)},
             )
             raise ValueError(str(exc)) from exc
+
+    def _should_accept_raw_readme(self, file_path: str, response: str | None, error: Exception) -> bool:
+        if file_path != "README.md":
+            return False
+        if response is None or not response.strip():
+            return False
+        if isinstance(error, LLMError):
+            return False
+        return True

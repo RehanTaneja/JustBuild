@@ -585,6 +585,27 @@ class MultiAgentSystemTests(unittest.TestCase):
             generated_names = {path.name for path in context.implementation.generated_files}
             self.assertEqual(generated_names, {"index.html", "styles.css", "app.js", "README.md"})
 
+    def test_readme_markdown_response_is_accepted_without_json_wrapper(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            responses = default_responses()
+            responses["implementation_file:README.md"] = "# Simple To-Do Web App\n\nOpen `index.html` in a browser.\n"
+            context = OrchestratorAgent(
+                product_idea="Simple to do web app",
+                output_root=Path(tmp_dir),
+                llm_client=FakeLLMClient(responses=responses),
+                node_bin="missing-node",
+                pytest_bin="missing-pytest",
+                memory_path=Path(tmp_dir) / "build_memory.json",
+            ).run()
+
+            self.assertTrue(context.testing.passed)
+            self.assertEqual(
+                (context.implementation.prototype_dir / "README.md").read_text(encoding="utf-8"),
+                "# Simple To-Do Web App\n\nOpen `index.html` in a browser.\n",
+            )
+            events_log = context.events_log_path.read_text(encoding="utf-8")
+            self.assertIn("Accepted raw markdown content for README.md", events_log)
+
     def test_planning_refinement_with_architecture_retry_reaches_implementation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             context = OrchestratorAgent(
