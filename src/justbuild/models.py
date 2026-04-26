@@ -29,6 +29,8 @@ class BuildRequest:
     llm_model: str | None = None
     llm_base_url: str | None = None
     llm_backend_type: str | None = None
+    llm_structured_output_mode: str | None = None
+    llm_timeout_s: int = 60
     enable_playwright: bool = False
     node_bin: str = "node"
     pytest_bin: str = "pytest"

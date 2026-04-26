@@ -36,6 +36,8 @@ def write_final_report(context: BuildContext) -> Path:
 - Title: {specification.title if specification else "Unavailable"}
 - Prototype: {context.implementation.prototype_dir if context.implementation else "Unavailable"}
 - LLM Backend: {context.request.llm_backend_type or "Unavailable"} / {context.request.llm_provider or "Unavailable"} / {context.request.llm_model or "Unavailable"}
+- Structured Output Mode: {context.request.llm_structured_output_mode or "Unavailable"}
+- LLM Timeout Seconds: {context.request.llm_timeout_s}
 - Max workers: {context.request.max_workers}
 - Workflow terminal state: {context.workflow_terminal_state or "Unavailable"}
 - Workflow node runs: {len(context.node_runs)}

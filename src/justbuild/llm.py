@@ -27,6 +27,10 @@ class LLMResponseError(LLMError):
     """Raised when a provider response is malformed."""
 
 
+class LLMTimeoutError(LLMTransportError):
+    """Raised when a provider request exceeds the configured timeout."""
+
+
 @dataclass(slots=True)
 class LLMBackendInfo:
     provider: str | None
@@ -161,14 +165,7 @@ class LLMClient:
                     base_url=base_url,
                 )
             except LLMResponseError:
-                return self._generate_best_effort_json(
-                    provider=provider,
-                    model=model,
-                    prompt=prompt,
-                    system_prompt=system_prompt,
-                    response_schema=response_schema,
-                    base_url=base_url,
-                )
+                raise
 
         if provider == "anthropic":
             payload = self._build_anthropic_tool_payload(model, prompt, system_prompt, response_schema)
@@ -295,6 +292,10 @@ class LLMClient:
                     f"Configured model is unavailable or inaccessible for provider request: {detail}"
                 ) from exc
             raise LLMTransportError(f"Provider HTTP error {exc.code}: {detail}") from exc
+        except TimeoutError as exc:
+            raise LLMTimeoutError(
+                f"Provider request timed out after {self.timeout_s}s. Increase the LLM timeout if the model is slow."
+            ) from exc
         except error.URLError as exc:
             raise LLMTransportError(f"Provider network error: {exc.reason}") from exc
 
@@ -458,7 +459,7 @@ class LLMClient:
         base_url: str | None,
     ) -> str:
         try:
-            return self._normalize_json_text(raw_text)
+            normalized = self._normalize_json_text(raw_text)
         except LLMResponseError:
             repair_prompt = (
                 "You previously returned output that was not a single raw JSON object.\n"
@@ -474,7 +475,16 @@ class LLMClient:
                 system_prompt=self._augment_system_prompt_for_json(system_prompt),
                 base_url=base_url,
             )
-            return self._normalize_json_text(repaired)
+            normalized = self._normalize_json_text(repaired)
+        return self._complete_or_raise_missing_keys(
+            normalized_json=normalized,
+            provider=provider,
+            model=model,
+            prompt=prompt,
+            system_prompt=system_prompt,
+            response_schema=response_schema,
+            base_url=base_url,
+        )
 
     def _normalize_json_text(self, raw_text: str) -> str:
         stripped = raw_text.strip()
@@ -558,6 +568,58 @@ class LLMClient:
         if isinstance(payload, dict):
             return payload
         return None
+
+    def _complete_or_raise_missing_keys(
+        self,
+        normalized_json: str,
+        provider: str,
+        model: str,
+        prompt: str,
+        system_prompt: str | None,
+        response_schema: dict[str, Any],
+        base_url: str | None,
+    ) -> str:
+        payload = self._parse_json_object(normalized_json)
+        if payload is None:
+            raise LLMResponseError("Normalized output was not a JSON object")
+
+        required_keys = response_schema.get("required", [])
+        missing_keys = [key for key in required_keys if key not in payload]
+        if not missing_keys:
+            return normalized_json
+
+        repair_prompt = (
+            "You previously returned a JSON object that is missing required keys.\n"
+            "Return exactly one valid JSON object.\n"
+            "Preserve all existing keys and values.\n"
+            "Add every missing required key.\n"
+            "For missing array-like fields, return an empty array if uncertain.\n"
+            "For missing scalar fields, return a short placeholder string only if you cannot infer a value.\n"
+            "Never remove existing keys. Never rename keys. Do not include markdown or commentary.\n"
+            f"Original prompt:\n{prompt}\n\n"
+            f"Required keys: {json.dumps(required_keys)}\n"
+            f"Missing keys: {json.dumps(missing_keys)}\n"
+            f"Current JSON:\n{normalized_json}"
+        )
+        repaired = self._generate_text_response(
+            provider=provider,
+            model=model,
+            prompt=repair_prompt,
+            system_prompt=self._augment_system_prompt_for_json(system_prompt),
+            base_url=base_url,
+        )
+        repaired_normalized = self._normalize_json_text(repaired)
+        repaired_payload = self._parse_json_object(repaired_normalized)
+        if repaired_payload is None:
+            raise LLMResponseError("Schema completion repair did not return a JSON object")
+
+        remaining_missing = [key for key in required_keys if key not in repaired_payload]
+        if remaining_missing:
+            present = ", ".join(sorted(repaired_payload.keys())) or "(none)"
+            raise LLMResponseError(
+                f"Incomplete JSON after schema completion repair. Missing keys: {', '.join(remaining_missing)}. Present keys: {present}"
+            )
+        return repaired_normalized
 
     def _looks_like_model_access_error(self, detail: str) -> bool:
         lowered = detail.lower()

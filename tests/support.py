@@ -21,6 +21,7 @@ class FakeLLMClient:
 
     @property
     def backend_info(self):  # pragma: no cover - simple compatibility shim
+        mode = "best_effort_schema" if self.provider == "openai_compatible" else "strict_schema"
         return type(
             "BackendInfo",
             (),
@@ -29,6 +30,7 @@ class FakeLLMClient:
                 "model": self.model,
                 "base_url": self.base_url,
                 "backend_type": "local" if self.local_model else "cloud",
+                "structured_output_mode": mode,
             },
         )()
 

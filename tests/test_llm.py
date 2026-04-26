@@ -6,7 +6,7 @@ import unittest
 from urllib import error
 from unittest.mock import patch
 
-from justbuild.llm import LLMClient, LLMConfigurationError, LLMModelAccessError, LLMResponseError
+from justbuild.llm import LLMClient, LLMConfigurationError, LLMModelAccessError, LLMResponseError, LLMTimeoutError
 
 
 class FakeHTTPResponse:
@@ -116,4 +116,32 @@ class LLMClientTests(unittest.TestCase):
         )
         with patch("urllib.request.urlopen", side_effect=not_found):
             with self.assertRaises(LLMModelAccessError):
+                client.generate("hello", response_schema={"type": "object", "required": ["ok"]})
+
+    def test_missing_required_key_triggers_schema_completion_repair(self) -> None:
+        client = LLMClient(provider="openai_compatible", local_model="llama3", base_url="http://localhost:11434/v1")
+        first = FakeHTTPResponse({"choices": [{"message": {"content": '{"summary":"done"}'}}]})
+        repaired = FakeHTTPResponse({"choices": [{"message": {"content": '{"summary":"done","justification":[]}'}}]})
+        with patch("urllib.request.urlopen", side_effect=[first, repaired]):
+            response = client.generate(
+                "hello",
+                response_schema={"type": "object", "required": ["summary", "justification"]},
+            )
+
+        self.assertEqual(json.loads(response), {"summary": "done", "justification": []})
+
+    def test_repeated_incomplete_json_fails_after_schema_completion_repair(self) -> None:
+        client = LLMClient(provider="openai_compatible", local_model="llama3", base_url="http://localhost:11434/v1")
+        incomplete = FakeHTTPResponse({"choices": [{"message": {"content": '{"summary":"done"}'}}]})
+        with patch("urllib.request.urlopen", side_effect=[incomplete, incomplete]):
+            with self.assertRaises(LLMResponseError):
+                client.generate(
+                    "hello",
+                    response_schema={"type": "object", "required": ["summary", "justification"]},
+                )
+
+    def test_timeout_is_reported_distinctly(self) -> None:
+        client = LLMClient(provider="anthropic", model="claude-test", api_key="secret", timeout_s=5)
+        with patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")):
+            with self.assertRaises(LLMTimeoutError):
                 client.generate("hello", response_schema={"type": "object", "required": ["ok"]})

@@ -77,6 +77,8 @@ def write_build_summary(context: BuildContext) -> Path:
             "model": context.request.llm_model,
             "base_url": context.request.llm_base_url,
             "backend_type": context.request.llm_backend_type,
+            "structured_output_mode": context.request.llm_structured_output_mode,
+            "timeout_s": context.request.llm_timeout_s,
         },
         "testing_backend": {
             "enable_playwright": context.request.enable_playwright,

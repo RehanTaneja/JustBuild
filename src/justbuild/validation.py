@@ -28,7 +28,10 @@ def parse_json_object(raw_text: str) -> dict[str, Any]:
 def require_keys(payload: dict[str, Any], required_keys: list[str]) -> None:
     missing = [key for key in required_keys if key not in payload]
     if missing:
-        raise JSONValidationError(f"LLM response is missing required keys: {', '.join(missing)}")
+        present = ", ".join(sorted(payload.keys())) or "(none)"
+        raise JSONValidationError(
+            f"LLM response is missing required keys: {', '.join(missing)}. Present keys: {present}"
+        )
 
 
 def normalize_text(value: Any, field_name: str) -> str:

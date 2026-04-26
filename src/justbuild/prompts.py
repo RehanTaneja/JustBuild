@@ -77,7 +77,9 @@ ARCHITECTURE_REVIEW_SCHEMA = {
 def specification_system_prompt() -> str:
     return (
         "You are the JustBuild specification agent. Return valid JSON only. "
-        "Do not include markdown, prose outside JSON, or code fences."
+        "Do not include markdown, prose outside JSON, or code fences. "
+        "All required keys must be present. Never omit a required key. "
+        "Do not rename keys. Output exactly one JSON object."
     )
 
 
@@ -91,14 +93,18 @@ def specification_user_prompt(idea: str, architecture_feedback: list[str] | None
         f"{memory_block}"
         "Return fields: title, product_summary, requirements, features, user_stories, "
         "api_contracts, assumptions, constraints, missing_requirements.\n"
-        "Each list field must be an array of strings."
+        "Each list field must be an array of strings.\n"
+        "Include every required field even if uncertain.\n"
+        "If a list field is uncertain, return an empty array instead of omitting it."
     )
 
 
 def architecture_system_prompt() -> str:
     return (
         "You are the JustBuild architecture agent. Return valid JSON only and keep the design "
-        "grounded in the current repository structure."
+        "grounded in the current repository structure. "
+        "All required keys must be present. Never omit a required key. "
+        "Do not rename keys. Output exactly one JSON object."
     )
 
 
@@ -110,14 +116,19 @@ def architecture_user_prompt(spec: ProductSpecification, memory: BuildMemory | N
         f"{memory_block}"
         "Return fields: summary, folder_structure, services, database_schema, "
         "design_tradeoffs, justification.\n"
-        "Each list field must be an array of strings."
+        "Each list field must be an array of strings.\n"
+        "The justification field is mandatory and must always be included as an array of strings.\n"
+        "Include every required field even if uncertain.\n"
+        "If a list field is uncertain, return an empty array instead of omitting it."
     )
 
 
 def architecture_review_system_prompt() -> str:
     return (
         "You are the JustBuild architecture review agent. Return valid JSON only. "
-        "Critique the proposed architecture against the product specification."
+        "Critique the proposed architecture against the product specification. "
+        "All required keys must be present. Never omit a required key. "
+        "Do not rename keys. Output exactly one JSON object."
     )
 
 
@@ -133,14 +144,17 @@ def architecture_review_user_prompt(
         f"Architecture: {json.dumps(asdict(architecture), indent=2) if architecture else 'null'}\n"
         f"{memory_block}"
         "Return JSON with findings, recommendations, and requires_refinement.\n"
-        "findings and recommendations must be arrays of strings. requires_refinement must be a boolean."
+        "findings and recommendations must be arrays of strings. requires_refinement must be a boolean.\n"
+        "Include every required field even if uncertain. If an array field is uncertain, return an empty array."
     )
 
 
 def implementation_system_prompt() -> str:
     return (
         "You are the JustBuild implementation agent. Return valid JSON only. "
-        "Generate a static browser prototype file bundle with production-style structure."
+        "Generate a static browser prototype file bundle with production-style structure. "
+        "All required keys must be present. Never omit a required key. "
+        "Do not rename keys. Output exactly one JSON object."
     )
 
 
@@ -169,14 +183,17 @@ def implementation_user_prompt(
         "The HTML must include the product title and a 'Feature Breakdown' section.\n"
         "The JS must include the phrase 'Generated Response'.\n"
         "The CSS must include a :root block.\n"
-        "If a fix plan is provided, prioritize it over the prior bundle."
+        "If a fix plan is provided, prioritize it over the prior bundle.\n"
+        "Include every required field even if uncertain. If an array field is uncertain, return an empty array."
     )
 
 
 def testing_system_prompt() -> str:
     return (
         "You are the JustBuild testing agent. Return valid JSON only. "
-        "Produce a test checklist, not a narrative."
+        "Produce a test checklist, not a narrative. "
+        "All required keys must be present. Never omit a required key. "
+        "Do not rename keys. Output exactly one JSON object."
     )
 
 
@@ -187,21 +204,26 @@ def testing_user_prompt(spec: ProductSpecification, architecture: ArchitecturePl
         f"Specification: {json.dumps(asdict(spec), indent=2)}\n"
         f"Architecture: {json.dumps(asdict(architecture), indent=2)}\n"
         f"{memory_block}"
-        "Return JSON with unit_checks, integration_checks, failure_focus as arrays of strings."
+        "Return JSON with unit_checks, integration_checks, failure_focus as arrays of strings.\n"
+        "Include every required field even if uncertain. If an array field is uncertain, return an empty array."
     )
 
 
 def evaluation_system_prompt() -> str:
     return (
         "You are the JustBuild evaluation agent. Return valid JSON only. "
-        "Assess the build after implementation and testing."
+        "Assess the build after implementation and testing. "
+        "All required keys must be present. Never omit a required key. "
+        "Do not rename keys. Output exactly one JSON object."
     )
 
 
 def evaluation_draft_system_prompt(draft_name: str) -> str:
     return (
         "You are the JustBuild evaluation draft agent. Return valid JSON only. "
-        f"Produce the {draft_name} draft for the final evaluation."
+        f"Produce the {draft_name} draft for the final evaluation. "
+        "All required keys must be present. Never omit a required key. "
+        "Do not rename keys. Output exactly one JSON object."
     )
 
 
@@ -219,7 +241,8 @@ def evaluation_draft_user_prompt(
         f"Architecture: {json.dumps(asdict(architecture), indent=2)}\n"
         f"Testing: {json.dumps(asdict(testing), indent=2, default=str)}\n"
         f"{memory_block}"
-        f"Return only these fields as arrays of strings: {', '.join(draft_fields)}"
+        f"Return only these fields as arrays of strings: {', '.join(draft_fields)}\n"
+        "Include every required field even if uncertain. If an array field is uncertain, return an empty array."
     )
 
 
@@ -238,14 +261,17 @@ def evaluation_user_prompt(
         f"{memory_block}"
         "Return JSON with code_quality, maintainability, scalability_risks, "
         "security_concerns, refactoring_opportunities, technical_debt, risk_assessment "
-        "as arrays of strings."
+        "as arrays of strings.\n"
+        "Include every required field even if uncertain. If an array field is uncertain, return an empty array."
     )
 
 
 def debugging_system_prompt() -> str:
     return (
         "You are the JustBuild debugging agent. Return valid JSON only. "
-        "Diagnose test and implementation failures, classify them, and propose a fix plan."
+        "Diagnose test and implementation failures, classify them, and propose a fix plan. "
+        "All required keys must be present. Never omit a required key. "
+        "Do not rename keys. Output exactly one JSON object."
     )
 
 

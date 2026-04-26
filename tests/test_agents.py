@@ -94,6 +94,24 @@ class MultiAgentSystemTests(unittest.TestCase):
 
         return _responder
 
+    def _openai_compatible_missing_key_then_repair_responder(self, responses: dict[str, str], target_key: str):
+        call_count = {"count": 0}
+
+        def _responder(request_obj, *args, **kwargs):
+            payload = json.loads(request_obj.data.decode("utf-8"))
+            call_count["count"] += 1
+            if call_count["count"] == 1:
+                key = self._classify_provider_prompt(payload)
+                partial = json.loads(responses[key])
+                partial.pop(target_key, None)
+                return self._MockHTTPResponse({"choices": [{"message": {"content": json.dumps(partial)}}]})
+            if call_count["count"] == 2:
+                return self._MockHTTPResponse({"choices": [{"message": {"content": responses["architecture_plan"]}}]})
+            key = self._classify_provider_prompt(payload)
+            return self._MockHTTPResponse({"choices": [{"message": {"content": responses[key]}}]})
+
+        return _responder
+
     # Main pipeline test
     def test_end_to_end_build_generates_prototype_and_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir: # Creates a fake folder which is automatically deleted after the test
@@ -393,6 +411,30 @@ class MultiAgentSystemTests(unittest.TestCase):
             self.assertTrue(context.testing.passed)
             self.assertIsNotNone(context.evaluation)
             self.assertTrue((context.implementation.prototype_dir / "index.html").exists())
+
+    def test_architecture_missing_key_is_repaired_end_to_end(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            responses = default_responses()
+            llm_client = LLMClient(
+                provider="openai_compatible",
+                local_model="llama3",
+                base_url="http://localhost:11434/v1",
+            )
+            with patch(
+                "urllib.request.urlopen",
+                side_effect=self._openai_compatible_missing_key_then_repair_responder(responses, "justification"),
+            ):
+                context = OrchestratorAgent(
+                    product_idea="Collaborative roadmap planner for product teams",
+                    output_root=Path(tmp_dir),
+                    llm_client=llm_client,
+                    node_bin="missing-node",
+                    pytest_bin="missing-pytest",
+                    memory_path=Path(tmp_dir) / "build_memory.json",
+                ).run()
+
+            self.assertTrue(context.testing.passed)
+            self.assertEqual(context.architecture.justification, ["The build remains easy to test and inspect."])
 
     def test_publish_failure_does_not_fail_build(self) -> None:
         class FailingPublisher:
