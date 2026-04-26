@@ -29,6 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--api-key", default=os.getenv("JUSTBUILD_LLM_API_KEY"), help="Cloud LLM API key")
     parser.add_argument("--local-model", default=os.getenv("JUSTBUILD_LLM_LOCAL_MODEL"), help="Local model name served by an OpenAI-compatible endpoint")
     parser.add_argument("--llm-timeout-s", type=int, default=int(os.getenv("JUSTBUILD_LLM_TIMEOUT_S", "60")), help="Timeout in seconds for each LLM provider request")
+    parser.add_argument("--log-mode", default=os.getenv("JUSTBUILD_LOG_MODE", "progress"), choices=["quiet", "progress", "debug"], help="Logging verbosity for live CLI diagnostics")
     parser.add_argument("--enable-playwright", action="store_true", default=os.getenv("JUSTBUILD_ENABLE_PLAYWRIGHT") == "1", help="Enable optional Playwright browser validation")
     parser.add_argument("--node-bin", default=os.getenv("JUSTBUILD_NODE_BIN", "node"), help="Node.js binary for JS runtime validation")
     parser.add_argument("--pytest-bin", default=os.getenv("JUSTBUILD_PYTEST_BIN", "pytest"), help="Pytest binary for Python execution validation")
@@ -85,11 +86,15 @@ def main(argv: list[str] | None = None) -> int:
             github_repo_name=args.github_repo_name,
             github_repo_visibility=args.github_visibility,
             timeout_s=args.llm_timeout_s,
+            log_mode=args.log_mode,
         ) # Initializes orchestrator.
         context = orchestrator.run() # Runs the entire system.
     except LLMConfigurationError as exc:
         _print_configuration_error(exc)
         return 2
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
 
     payload = {
         "idea": args.idea,
@@ -108,6 +113,10 @@ def main(argv: list[str] | None = None) -> int:
             "max_workers": context.request.max_workers,
         },
         "memory_path": str(context.request.memory_path) if context.request.memory_path else None,
+        "run_dir": str(context.run_dir) if context.run_dir else None,
+        "events_log_path": str(context.events_log_path) if context.events_log_path else None,
+        "text_log_path": str(context.text_log_path) if context.text_log_path else None,
+        "partial_summary_path": str(context.partial_summary_path) if context.partial_summary_path else None,
         "github_publish": {
             "enabled": context.github_publish.enabled if context.github_publish else False,
             "published": context.github_publish.published if context.github_publish else False,

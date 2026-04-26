@@ -31,6 +31,7 @@ class BuildRequest:
     llm_backend_type: str | None = None
     llm_structured_output_mode: str | None = None
     llm_timeout_s: int = 60
+    log_mode: str = "progress"
     enable_playwright: bool = False
     node_bin: str = "node"
     pytest_bin: str = "pytest"
@@ -191,6 +192,11 @@ class BuildContext:
     iterations: list[dict[str, Any]] = field(default_factory=list)
     node_runs: list[Any] = field(default_factory=list)
     workflow_terminal_state: str | None = None
+    run_dir: Path | None = None
+    events_log_path: Path | None = None
+    text_log_path: Path | None = None
+    partial_summary_path: Path | None = None
+    last_failure: dict[str, Any] | None = None
     memory: BuildMemory | None = None
     specification: ProductSpecification | None = None
     architecture: ArchitecturePlan | None = None

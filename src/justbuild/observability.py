@@ -1,40 +1,40 @@
 from __future__ import annotations
 
 import json
+import sys
 import time
 from contextlib import contextmanager
-# Converts dataclass->dictionary. Needed to serialize JSON
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
-# Type hinting for context manager
-from typing import Iterator
+from typing import Any, Iterator
 
-# Use the central brain and log structure
 from .models import BuildContext, DecisionLog
-# For getting output folder path
 from .reporting import _build_root
 
-"""
-This file acts as a black box recorder + performance tracker. 
-- It looks at what happened
-- It records how long it took
-- It writes everything into a final JSON summary
-"""
+
+def utc_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def initialize_run_artifacts(context: BuildContext, run_dir: Path) -> None:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    context.run_dir = run_dir
+    context.events_log_path = run_dir / "build_events.jsonl"
+    context.text_log_path = run_dir / "build.log"
+    context.partial_summary_path = run_dir / "build_summary.partial.json"
+    for path in (context.events_log_path, context.text_log_path):
+        path.write_text("", encoding="utf-8")
+    write_partial_summary(context)
+
 
 class BuildLogger:
-    """Structured logger for agent decisions and timing which it records into BuildContext.
-    A class that implements the DecisionLogger schema.
+    """Structured logger with in-memory, on-disk, and optional stderr sinks."""
 
-    This is intentionally simple: the same interface can later send events to
-    OpenTelemetry, Kafka, Datadog, or a workflow database without changing the
-    agents themselves.
-    """
+    def __init__(self, context: BuildContext, stderr=None) -> None:
+        self.context = context
+        self.stderr = stderr or sys.stderr
 
-    # context is the global state (current instance of BuildContext for the project) so that logs are stored inside the system state.
-    def __init__(self, context: BuildContext) -> None:
-        self.context = context 
-
-    # Creates a DecisionLog instance and appends it to context.decisions
     def log(
         self,
         agent: str,
@@ -44,6 +44,7 @@ class BuildLogger:
         elapsed_ms: int,
         metadata: dict[str, object] | None = None,
     ) -> None:
+        event_metadata = dict(metadata or {})
         self.context.decisions.append(
             DecisionLog(
                 agent=agent,
@@ -51,27 +52,173 @@ class BuildLogger:
                 category=category,
                 iteration=iteration,
                 elapsed_ms=elapsed_ms,
-                metadata=dict(metadata or {}),
+                metadata=event_metadata,
             )
         )
+        self.emit_event(
+            category=category,
+            message=message,
+            metadata=event_metadata,
+            agent=agent,
+            iteration=iteration,
+            elapsed_ms=elapsed_ms,
+        )
 
-    # Wraps code and automatically logs elapsed time.
+    def emit_event(
+        self,
+        category: str,
+        message: str,
+        metadata: dict[str, object] | None = None,
+        *,
+        agent: str | None = None,
+        iteration: int | None = None,
+        elapsed_ms: int | None = None,
+    ) -> None:
+        payload = {
+            "timestamp": utc_timestamp(),
+            "category": category,
+            "message": message,
+            "agent": agent,
+            "iteration": iteration,
+            "elapsed_ms": elapsed_ms,
+            "metadata": dict(metadata or {}),
+        }
+        self._write_event(payload)
+        self._write_text_line(payload)
+        self._write_console_line(payload)
+
     @contextmanager
     def timed(self, agent: str, message: str, category: str, iteration: int) -> Iterator[None]:
-        started_at = time.perf_counter() # Starts the timer
+        started_at = time.perf_counter()
         try:
-            yield # Runs code
+            yield
         finally:
-            elapsed_ms = int((time.perf_counter() - started_at) * 1000) # Measures elapsed time after code execution is finished.
+            elapsed_ms = int((time.perf_counter() - started_at) * 1000)
             self.log(agent=agent, message=message, category=category, iteration=iteration, elapsed_ms=elapsed_ms)
 
-# Creates a final JSON report for the entire build
+    def _write_event(self, payload: dict[str, Any]) -> None:
+        if self.context.events_log_path is None:
+            return
+        with self.context.events_log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload) + "\n")
+            handle.flush()
+
+    def _write_text_line(self, payload: dict[str, Any]) -> None:
+        if self.context.text_log_path is None:
+            return
+        metadata = payload.get("metadata") or {}
+        meta_suffix = f" | {json.dumps(metadata, sort_keys=True)}" if metadata else ""
+        agent = payload.get("agent") or "system"
+        line = f"{payload['timestamp']} [{payload['category']}] {agent}: {payload['message']}{meta_suffix}\n"
+        with self.context.text_log_path.open("a", encoding="utf-8") as handle:
+            handle.write(line)
+            handle.flush()
+
+    def _write_console_line(self, payload: dict[str, Any]) -> None:
+        mode = self.context.request.log_mode
+        if mode == "quiet":
+            return
+        if mode == "progress" and payload["category"] not in {
+            "workflow_queue",
+            "workflow_start",
+            "workflow_complete",
+            "workflow_retry",
+            "workflow_failure",
+            "llm_failure",
+            "llm_timeout",
+            "schema_repair",
+            "schema_completion_repair",
+            "build_failure",
+            "build_status",
+        }:
+            return
+        line = self._console_message(payload)
+        if line:
+            print(line, file=self.stderr, flush=True)
+
+    def _console_message(self, payload: dict[str, Any]) -> str:
+        category = payload["category"]
+        message = payload["message"]
+        metadata = payload.get("metadata") or {}
+        if category == "workflow_start":
+            return f"Starting {metadata.get('node_id', 'step')}"
+        if category == "workflow_complete":
+            return f"Completed {metadata.get('node_id', 'step')}"
+        if category == "workflow_retry":
+            return f"Retrying {metadata.get('node_id', 'step')} ({metadata.get('attempt')}/{metadata.get('max_attempts')})"
+        if category == "workflow_failure":
+            return f"Failed {metadata.get('node_id', 'step')}: {metadata.get('error', message)}"
+        if category == "llm_timeout":
+            return message
+        if category == "schema_repair":
+            return message
+        if category == "schema_completion_repair":
+            return message
+        if category == "build_failure":
+            return message
+        if category == "build_status":
+            return message
+        if category == "llm_failure":
+            return message
+        return message if self.context.request.log_mode == "debug" else ""
+
+
+def partial_summary_payload(context: BuildContext) -> dict[str, Any]:
+    return {
+        "product_idea": context.request.product_idea,
+        "run_dir": str(context.run_dir) if context.run_dir else None,
+        "events_log_path": str(context.events_log_path) if context.events_log_path else None,
+        "text_log_path": str(context.text_log_path) if context.text_log_path else None,
+        "llm_backend": {
+            "provider": context.request.llm_provider,
+            "model": context.request.llm_model,
+            "base_url": context.request.llm_base_url,
+            "backend_type": context.request.llm_backend_type,
+            "structured_output_mode": context.request.llm_structured_output_mode,
+            "timeout_s": context.request.llm_timeout_s,
+        },
+        "milestones": [asdict(m) for m in context.milestones],
+        "decisions": [asdict(d) for d in context.decisions],
+        "iterations": context.iterations,
+        "workflow_terminal_state": context.workflow_terminal_state,
+        "node_runs": [asdict(run) for run in context.node_runs],
+        "last_failure": context.last_failure,
+        "specification": asdict(context.specification) if context.specification else None,
+        "architecture": asdict(context.architecture) if context.architecture else None,
+        "architecture_review": asdict(context.architecture_review) if context.architecture_review else None,
+        "implementation": {
+            "prototype_dir": str(context.implementation.prototype_dir) if context.implementation and context.implementation.prototype_dir else None,
+            "generated_files": [str(path) for path in context.implementation.generated_files] if context.implementation else [],
+            "notes": context.implementation.notes if context.implementation else [],
+        },
+        "testing": {
+            "passed": context.testing.passed if context.testing else None,
+            "summary": context.testing.summary if context.testing else None,
+            "failure_reports": [asdict(report) for report in context.testing.failure_reports] if context.testing else [],
+        },
+        "debugging": asdict(context.debugging) if context.debugging else None,
+        "evaluation": asdict(context.evaluation) if context.evaluation else None,
+    }
+
+
+def write_partial_summary(context: BuildContext) -> Path | None:
+    if context.partial_summary_path is None:
+        return None
+    payload = partial_summary_payload(context)
+    context.partial_summary_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return context.partial_summary_path
+
+
 def write_build_summary(context: BuildContext) -> Path:
-    output_dir = _build_root(context) # gets base folder.
-    output_dir.mkdir(parents=True, exist_ok=True) # creates it if it doesn't exist.
-    path = output_dir / "build_summary.json" # defined file path for the output JSON summary.
+    output_dir = _build_root(context)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / "build_summary.json"
     payload = {
         "product_idea": context.request.product_idea,
+        "run_dir": str(context.run_dir) if context.run_dir else None,
+        "events_log_path": str(context.events_log_path) if context.events_log_path else None,
+        "text_log_path": str(context.text_log_path) if context.text_log_path else None,
+        "partial_summary_path": str(context.partial_summary_path) if context.partial_summary_path else None,
         "llm_backend": {
             "provider": context.request.llm_provider,
             "model": context.request.llm_model,
@@ -97,6 +244,7 @@ def write_build_summary(context: BuildContext) -> Path:
         "iterations": context.iterations,
         "workflow_terminal_state": context.workflow_terminal_state,
         "node_runs": [asdict(run) for run in context.node_runs],
+        "last_failure": context.last_failure,
         "specification": asdict(context.specification) if context.specification else None,
         "architecture": asdict(context.architecture) if context.architecture else None,
         "architecture_review": asdict(context.architecture_review) if context.architecture_review else None,
@@ -136,9 +284,3 @@ def write_build_summary(context: BuildContext) -> Path:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     context.build_summary_path = path
     return path
-
-"""
-While agents are doing work, the BuildLogger class automatically logs and records each step into overall system BuildContext.
-Note: This is different from real-time logging as it just stores decision timestamps in memory. 
-Once agents are done with their work, the write_build_summary function creates a final JSON summary report.
-"""

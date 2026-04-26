@@ -14,8 +14,9 @@ from .agents.testing import TestingAgent
 from .llm import LLMClient
 from .memory import default_memory_path, load_build_memory, save_build_memory, update_build_memory
 from .models import BuildContext, BuildRequest, FailureReport, FixPlan, GitHubPublishResult, Milestone, TaskStatus
-from .observability import BuildLogger, write_build_summary
+from .observability import BuildLogger, initialize_run_artifacts, write_build_summary, write_partial_summary
 from .publishing import GitHubPublisher
+from .prototype import slugify
 from .reporting import write_final_report
 from .workflow import ExecutionState, NodeResult, RetryPolicy, TerminalState, WorkflowEdge, WorkflowGraph, WorkflowNode, WorkflowRuntime
 
@@ -45,6 +46,7 @@ class OrchestratorAgent:
         api_key: str | None = None,
         local_model: str | None = None,
         timeout_s: int = 60,
+        log_mode: str = "progress",
         enable_playwright: bool = False,
         node_bin: str = "node",
         pytest_bin: str = "pytest",
@@ -73,6 +75,7 @@ class OrchestratorAgent:
             llm_backend_type=backend.backend_type,
             llm_structured_output_mode=backend.structured_output_mode,
             llm_timeout_s=timeout_s,
+            log_mode=log_mode,
             enable_playwright=enable_playwright,
             node_bin=node_bin,
             pytest_bin=pytest_bin,
@@ -83,7 +86,15 @@ class OrchestratorAgent:
             github_repo_visibility=github_repo_visibility,
         )
         self.context = BuildContext(request=request)
+        run_dir = output_root / slugify(product_idea) / "run"
+        initialize_run_artifacts(self.context, run_dir)
         self.logger = BuildLogger(self.context)
+        self.logger.emit_event(
+            category="build_status",
+            message="Build initialized",
+            metadata={"run_dir": str(run_dir), "log_mode": log_mode},
+            agent=self.name,
+        )
         deps = AgentDependencies(context=self.context, logger=self.logger, llm=self.llm)
         self.specification_agent = SpecificationAgent(deps)
         self.architecture_agent = ArchitectureAgent(deps)
@@ -94,6 +105,7 @@ class OrchestratorAgent:
         self.publisher = publisher or GitHubPublisher()
         self.max_retries = max_retries
         self.max_workers = max(1, max_workers)
+        self.llm.event_logger = self._emit_llm_event
         self._create_milestones()
 
     def run(self) -> BuildContext:
@@ -101,12 +113,24 @@ class OrchestratorAgent:
         self.context.workflow_terminal_state = None
         self.context.github_publish = GitHubPublishResult(enabled=False, published=False)
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            runtime = WorkflowRuntime(executor)
+            runtime = WorkflowRuntime(executor, logger=self.logger)
             graph = self._build_workflow_graph()
             state = runtime.run(graph, self.context, max_workers=self.max_workers)
         if state.terminal_state == TerminalState.FAILED_BLOCKING:
             last_error = next((run.error for run in reversed(self.context.node_runs) if getattr(run, "error", None)), "Workflow execution failed.")
+            self.context.last_failure = {
+                "failed_node": next((run.node_id for run in reversed(self.context.node_runs) if getattr(run, "error", None)), None),
+                "error": last_error,
+            }
+            self.logger.emit_event(
+                category="build_failure",
+                message=f"Build failed. See {self.context.text_log_path} and {self.context.events_log_path}",
+                metadata=self.context.last_failure,
+                agent=self.name,
+            )
+            write_partial_summary(self.context)
             raise ValueError(last_error)
+        write_partial_summary(self.context)
         return self.context
 
     def _build_workflow_graph(self) -> WorkflowGraph:
@@ -434,6 +458,7 @@ class OrchestratorAgent:
 
     def _handle_persist_outputs(self, state: ExecutionState, node: WorkflowNode, attempt: int) -> NodeResult:
         update_build_memory(self.context)
+        write_partial_summary(self.context)
         write_build_summary(self.context)
         write_final_report(self.context)
         save_build_memory(self.context.request.memory_path, self.context.memory)
@@ -469,6 +494,7 @@ class OrchestratorAgent:
                 metadata={"error": str(exc)},
             )
             self._update_milestone("Publishing", TaskStatus.FAILED, error=str(exc))
+            write_partial_summary(self.context)
             write_build_summary(self.context)
             write_final_report(self.context)
             return NodeResult(terminal_state=TerminalState.COMPLETED_WITH_PUBLISH_FAILURE, metadata={"error": str(exc)})
@@ -489,9 +515,13 @@ class OrchestratorAgent:
             repo_full_name=result.repo_full_name,
             commits=len(result.commits),
         )
+        write_partial_summary(self.context)
         write_build_summary(self.context)
         write_final_report(self.context)
         return NodeResult(terminal_state=TerminalState.COMPLETED)
+
+    def _emit_llm_event(self, category: str, message: str, metadata: dict[str, object]) -> None:
+        self.logger.emit_event(category=category, message=message, metadata=metadata, agent="llm")
 
     def _evaluation_ready(self, context: BuildContext, state: ExecutionState) -> bool:
         return context.testing is not None

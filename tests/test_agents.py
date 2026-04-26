@@ -166,6 +166,13 @@ class MultiAgentSystemTests(unittest.TestCase):
             )
             with self.assertRaises(ValueError):
                 orchestrator.run()
+            self.assertIsNotNone(orchestrator.context.text_log_path)
+            self.assertTrue(orchestrator.context.text_log_path.exists())
+            self.assertTrue(orchestrator.context.events_log_path.exists())
+            self.assertTrue(orchestrator.context.partial_summary_path.exists())
+            partial_payload = json.loads(orchestrator.context.partial_summary_path.read_text(encoding="utf-8"))
+            self.assertIsNotNone(partial_payload["last_failure"])
+            self.assertEqual(partial_payload["last_failure"]["failed_node"], "specification")
 
     def test_implementation_retries_after_invalid_llm_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

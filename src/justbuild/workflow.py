@@ -10,6 +10,7 @@ from typing import Any
 
 from .concurrency import run_parallel
 from .models import BuildContext, TaskStatus
+from .observability import write_partial_summary
 
 
 class NodeStatus(str, Enum):
@@ -105,8 +106,9 @@ class ExecutionState:
 
 
 class WorkflowRuntime:
-    def __init__(self, executor: ThreadPoolExecutor) -> None:
+    def __init__(self, executor: ThreadPoolExecutor, logger=None) -> None:
         self.executor = executor
+        self.logger = logger
 
     def run(self, graph: WorkflowGraph, context: BuildContext, max_workers: int) -> ExecutionState:
         state = ExecutionState(context=context, graph=graph, max_workers=max_workers)
@@ -115,6 +117,7 @@ class WorkflowRuntime:
             state.node_attempts[node_id] = 0
         for node_id in graph.entry_nodes:
             state.enqueue(node_id)
+            self._emit("workflow_queue", f"Queued entry node {node_id}", {"node_id": node_id})
 
         while state.active_queue and state.terminal_state is None:
             ready_nodes: list[str] = []
@@ -138,6 +141,8 @@ class WorkflowRuntime:
                         )
                     )
                     state.dequeue(node_id)
+                    self._emit("workflow_skip", f"Skipped {node_id}", {"node_id": node_id})
+                    write_partial_summary(context)
                     continue
                 ready_nodes.append(node_id)
 
@@ -155,6 +160,8 @@ class WorkflowRuntime:
                 attempt = state.node_attempts[node_id] + 1
                 state.node_attempts[node_id] = attempt
                 state.node_statuses[node_id] = NodeStatus.RUNNING
+                self._emit("workflow_start", f"Starting {node_id}", {"node_id": node_id, "attempt": attempt})
+                write_partial_summary(context)
                 tasks[node_id] = self._build_task(node, state, attempt)
             for result in run_parallel(self.executor, tasks):
                 node_id = result.name
@@ -162,29 +169,43 @@ class WorkflowRuntime:
                 state.dequeue(node_id)
                 record = payload["record"]
                 context.node_runs.append(record)
+                write_partial_summary(context)
                 if payload["exception"] is not None:
                     if state.node_attempts[node_id] < graph.nodes[node_id].retry_policy.max_attempts:
                         state.node_statuses[node_id] = NodeStatus.PENDING
                         self._update_milestone_retry(context, graph.nodes[node_id].milestone_name, state.node_attempts[node_id])
+                        self._emit(
+                            "workflow_retry",
+                            f"Retrying {node_id}",
+                            {"node_id": node_id, "attempt": state.node_attempts[node_id] + 1, "max_attempts": graph.nodes[node_id].retry_policy.max_attempts, "error": payload["exception"]},
+                        )
+                        write_partial_summary(context)
                         state.enqueue(node_id)
                         continue
                     state.node_statuses[node_id] = NodeStatus.FAILED
                     self._update_milestone_failure(context, graph.nodes[node_id].milestone_name, payload["exception"])
+                    context.last_failure = {"failed_node": node_id, "attempt": record.attempt, "error": payload["exception"]}
+                    self._emit("workflow_failure", f"Failed {node_id}", {"node_id": node_id, "attempt": record.attempt, "error": payload["exception"]})
+                    write_partial_summary(context)
                     state.terminal_state = TerminalState.FAILED_BLOCKING
                     continue
 
                 state.node_statuses[node_id] = NodeStatus.COMPLETED
+                self._emit("workflow_complete", f"Completed {node_id}", {"node_id": node_id, "attempt": record.attempt, "elapsed_ms": record.elapsed_ms})
                 node_result: NodeResult = payload["node_result"]
                 for reset_node_id in node_result.reset_nodes:
                     state.reset_node(reset_node_id)
                 for activate_node_id in node_result.activate_nodes:
                     state.enqueue(activate_node_id)
+                    self._emit("workflow_queue", f"Queued {activate_node_id}", {"node_id": activate_node_id})
                 if node_result.terminal_state is not None:
                     state.terminal_state = node_result.terminal_state
+                write_partial_summary(context)
 
         if state.terminal_state is None:
             state.terminal_state = TerminalState.COMPLETED
         context.workflow_terminal_state = state.terminal_state.value
+        write_partial_summary(context)
         return state
 
     def _build_task(self, node: WorkflowNode, state: ExecutionState, attempt: int) -> Callable[[], dict[str, Any]]:
@@ -232,3 +253,8 @@ class WorkflowRuntime:
                 milestone.status = TaskStatus.FAILED
                 milestone.metadata.update({"error": error})
                 return
+
+    def _emit(self, category: str, message: str, metadata: dict[str, Any]) -> None:
+        if self.logger is None:
+            return
+        self.logger.emit_event(category=category, message=message, metadata=metadata, agent="workflow")

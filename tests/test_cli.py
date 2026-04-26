@@ -21,7 +21,8 @@ class CLITests(unittest.TestCase):
     def test_cli_outputs_machine_readable_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             stdout = StringIO()
-            with patch("sys.stdout", stdout), patch("justbuild.cli.LLMClient", FakeLLMClient):
+            stderr = StringIO()
+            with patch("sys.stdout", stdout), patch("sys.stderr", stderr), patch("justbuild.cli.LLMClient", FakeLLMClient):
                 exit_code = main(
                     [
                         "AI launch checklist assistant for startup founders",
@@ -46,6 +47,7 @@ class CLITests(unittest.TestCase):
 
         payload = json.loads(stdout.getvalue())
         self.assertEqual(exit_code, 0)
+        self.assertIn("Starting specification", stderr.getvalue())
         self.assertTrue(payload["passed"])
         self.assertGreaterEqual(payload["iterations"], 1)
         self.assertIn("prototype", payload["prototype_dir"])
@@ -151,6 +153,30 @@ class CLITests(unittest.TestCase):
         self.assertIn("Configuration error: No LLM backend configured", message)
         self.assertIn("--provider openai --model <model> --api-key <key>", message)
         self.assertIn("--provider openai_compatible --local-model <model> --base-url <url>", message)
+
+    def test_cli_failure_reports_log_paths(self) -> None:
+        stderr = StringIO()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            exit_code = None
+            failing_llm = lambda **kwargs: FakeLLMClient(responses=["not-json"], **kwargs)
+            with patch("sys.stderr", stderr), patch("justbuild.cli.LLMClient", failing_llm):
+                exit_code = main(
+                    [
+                        "Failure case",
+                        "--output-root",
+                        str(Path(tmp_dir)),
+                        "--provider",
+                        "openai",
+                        "--model",
+                        "gpt-test",
+                        "--api-key",
+                        "test-key",
+                    ]
+                )
+
+        message = stderr.getvalue()
+        self.assertEqual(exit_code, 1)
+        self.assertIn("Build failed. See", message)
 
     def test_cli_accepts_explicit_llm_timeout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

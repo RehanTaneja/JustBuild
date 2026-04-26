@@ -49,6 +49,7 @@ class LLMClient:
         model: str | None = None,
         base_url: str | None = None,
         timeout_s: int = 60,
+        event_logger=None,
     ) -> None:
         self.api_key = api_key
         self.local_model = local_model
@@ -56,6 +57,7 @@ class LLMClient:
         self.model = model
         self.base_url = base_url
         self.timeout_s = timeout_s
+        self.event_logger = event_logger
 
     @property
     def backend_info(self) -> LLMBackendInfo:
@@ -117,6 +119,7 @@ class LLMClient:
         base_url: str | None,
     ) -> str:
         if provider == "openai":
+            self._emit_event("llm_request", "Starting structured provider request", {"provider": provider, "model": model, "structured_output_mode": self._structured_output_mode(provider), "timeout_s": self.timeout_s})
             raw = self._generate_openai_response(
                 provider=provider,
                 model=model,
@@ -137,6 +140,7 @@ class LLMClient:
 
         if provider == "openai_compatible":
             try:
+                self._emit_event("llm_request", "Starting structured provider request", {"provider": provider, "model": model, "structured_output_mode": self._structured_output_mode(provider), "timeout_s": self.timeout_s})
                 raw = self._generate_openai_response(
                     provider=provider,
                     model=model,
@@ -146,6 +150,7 @@ class LLMClient:
                     base_url=base_url,
                 )
             except LLMError:
+                self._emit_event("llm_fallback", "Falling back from strict schema to best-effort structured output", {"provider": provider, "model": model})
                 return self._generate_best_effort_json(
                     provider=provider,
                     model=model,
@@ -168,6 +173,7 @@ class LLMClient:
                 raise
 
         if provider == "anthropic":
+            self._emit_event("llm_request", "Starting structured provider request", {"provider": provider, "model": model, "structured_output_mode": self._structured_output_mode(provider), "timeout_s": self.timeout_s})
             payload = self._build_anthropic_tool_payload(model, prompt, system_prompt, response_schema)
             headers = {
                 "Content-Type": "application/json",
@@ -178,6 +184,7 @@ class LLMClient:
             return self._extract_anthropic_tool_input(self._post_json(endpoint, payload, headers))
 
         if provider == "gemini":
+            self._emit_event("llm_request", "Starting structured provider request", {"provider": provider, "model": model, "structured_output_mode": self._structured_output_mode(provider), "timeout_s": self.timeout_s})
             raw = self._generate_gemini_response(prompt, system_prompt, response_schema, model, base_url)
             return self._normalize_or_repair_json(
                 raw_text=raw,
@@ -200,6 +207,7 @@ class LLMClient:
         response_schema: dict[str, Any],
         base_url: str | None,
     ) -> str:
+        self._emit_event("llm_fallback", "Using best-effort structured output mode", {"provider": provider, "model": model})
         raw = self._generate_text_response(
             provider=provider,
             model=model,
@@ -291,12 +299,15 @@ class LLMClient:
                 raise LLMModelAccessError(
                     f"Configured model is unavailable or inaccessible for provider request: {detail}"
                 ) from exc
+            self._emit_event("llm_http_error", "Provider returned an HTTP error", {"status_code": exc.code, "detail": detail[:500]})
             raise LLMTransportError(f"Provider HTTP error {exc.code}: {detail}") from exc
         except TimeoutError as exc:
+            self._emit_event("llm_timeout", f"Provider timeout after {self.timeout_s}s", {"timeout_s": self.timeout_s})
             raise LLMTimeoutError(
                 f"Provider request timed out after {self.timeout_s}s. Increase the LLM timeout if the model is slow."
             ) from exc
         except error.URLError as exc:
+            self._emit_event("llm_transport_error", "Provider network error", {"reason": str(exc.reason)})
             raise LLMTransportError(f"Provider network error: {exc.reason}") from exc
 
         try:
@@ -461,6 +472,7 @@ class LLMClient:
         try:
             normalized = self._normalize_json_text(raw_text)
         except LLMResponseError:
+            self._emit_event("schema_repair", "Repairing malformed structured output", {"provider": provider, "model": model})
             repair_prompt = (
                 "You previously returned output that was not a single raw JSON object.\n"
                 "Rewrite it as exactly one valid JSON object that matches the requested schema.\n"
@@ -588,6 +600,11 @@ class LLMClient:
         if not missing_keys:
             return normalized_json
 
+        self._emit_event(
+            "schema_completion_repair",
+            f"Repairing missing required keys: {', '.join(missing_keys)}",
+            {"provider": provider, "model": model, "missing_keys": missing_keys, "present_keys": sorted(payload.keys())},
+        )
         repair_prompt = (
             "You previously returned a JSON object that is missing required keys.\n"
             "Return exactly one valid JSON object.\n"
@@ -616,10 +633,20 @@ class LLMClient:
         remaining_missing = [key for key in required_keys if key not in repaired_payload]
         if remaining_missing:
             present = ", ".join(sorted(repaired_payload.keys())) or "(none)"
+            self._emit_event(
+                "schema_completion_repair",
+                f"Schema completion repair still missing keys: {', '.join(remaining_missing)}",
+                {"provider": provider, "model": model, "missing_keys": remaining_missing, "present_keys": sorted(repaired_payload.keys())},
+            )
             raise LLMResponseError(
                 f"Incomplete JSON after schema completion repair. Missing keys: {', '.join(remaining_missing)}. Present keys: {present}"
             )
         return repaired_normalized
+
+    def _emit_event(self, category: str, message: str, metadata: dict[str, Any] | None = None) -> None:
+        if self.event_logger is None:
+            return
+        self.event_logger(category=category, message=message, metadata=metadata or {})
 
     def _looks_like_model_access_error(self, detail: str) -> bool:
         lowered = detail.lower()
