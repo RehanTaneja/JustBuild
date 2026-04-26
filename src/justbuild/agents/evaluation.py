@@ -90,8 +90,9 @@ class EvaluationAgent(BaseAgent):
             memory=self.context.memory,
         )
         system_prompt = evaluation_draft_system_prompt(draft_name)
+        response_schema = {"type": "object", "required": draft_fields}
         try:
-            response = self.llm.generate(prompt, system_prompt=system_prompt)
+            response = self.llm.generate(prompt, system_prompt=system_prompt, response_schema=response_schema)
             if emit_logs:
                 self.logger.log(
                     self.name,

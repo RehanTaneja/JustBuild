@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from justbuild.agents.base import AgentDependencies
 from justbuild.agents.debugging import DebuggingAgent
@@ -20,6 +21,78 @@ A Python unittest file that verifies that the pipeline works end-to-end.
 
 # Groups all tests together, basically a checklist of everything that should not break
 class MultiAgentSystemTests(unittest.TestCase):
+
+    class _MockHTTPResponse:
+        def __init__(self, payload: dict) -> None:
+            self.payload = json.dumps(payload).encode("utf-8")
+
+        def read(self) -> bytes:
+            return self.payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    def _classify_provider_prompt(self, request_payload: dict) -> str:
+        if "system" in request_payload:
+            system = request_payload.get("system", "")
+        elif "messages" in request_payload:
+            system = next((message["content"] for message in request_payload["messages"] if message["role"] == "system"), "")
+        else:
+            system = ""
+        lowered = system.lower()
+        if "specification agent" in lowered:
+            return "specification"
+        if "architecture review agent" in lowered:
+            return "architecture_review"
+        if "architecture agent" in lowered:
+            return "architecture_plan"
+        if "implementation agent" in lowered:
+            return "implementation"
+        if "testing agent" in lowered:
+            return "testing"
+        if "debugging agent" in lowered:
+            return "debugging"
+        if "evaluation draft agent" in lowered:
+            if "quality" in lowered:
+                return "evaluation_quality"
+            if "risk" in lowered:
+                return "evaluation_risk"
+            if "security" in lowered:
+                return "evaluation_security"
+        if "evaluation agent" in lowered:
+            return "evaluation"
+        raise AssertionError(f"Unable to classify request payload: {request_payload}")
+
+    def _openai_compatible_responder(self, responses: dict[str, str]):
+        def _responder(request_obj, *args, **kwargs):
+            payload = json.loads(request_obj.data.decode("utf-8"))
+            key = self._classify_provider_prompt(payload)
+            content = f"```json\n{responses[key]}\n```"
+            return self._MockHTTPResponse({"choices": [{"message": {"content": content}}]})
+
+        return _responder
+
+    def _anthropic_tool_responder(self, responses: dict[str, str]):
+        def _responder(request_obj, *args, **kwargs):
+            payload = json.loads(request_obj.data.decode("utf-8"))
+            key = self._classify_provider_prompt(payload)
+            content = json.loads(responses[key])
+            return self._MockHTTPResponse(
+                {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "justbuild_response",
+                            "input": content,
+                        }
+                    ]
+                }
+            )
+
+        return _responder
 
     # Main pipeline test
     def test_end_to_end_build_generates_prototype_and_summary(self) -> None:
@@ -276,6 +349,50 @@ class MultiAgentSystemTests(unittest.TestCase):
             prompts = "\n".join(prompt for _, prompt in fake_llm.prompt_history)
             self.assertIn("Common past failures", prompts)
             self.assertIn("Previously successful patterns", prompts)
+
+    def test_end_to_end_build_succeeds_with_openai_compatible_fenced_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            responses = default_responses()
+            llm_client = LLMClient(
+                provider="openai_compatible",
+                local_model="llama3",
+                base_url="http://localhost:11434/v1",
+            )
+            with patch("urllib.request.urlopen", side_effect=self._openai_compatible_responder(responses)):
+                context = OrchestratorAgent(
+                    product_idea="Collaborative roadmap planner for product teams",
+                    output_root=Path(tmp_dir),
+                    llm_client=llm_client,
+                    node_bin="missing-node",
+                    pytest_bin="missing-pytest",
+                    memory_path=Path(tmp_dir) / "build_memory.json",
+                ).run()
+
+            self.assertTrue(context.testing.passed)
+            self.assertIsNotNone(context.evaluation)
+            self.assertTrue((context.implementation.prototype_dir / "index.html").exists())
+
+    def test_end_to_end_build_succeeds_with_anthropic_tool_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            responses = default_responses()
+            llm_client = LLMClient(
+                provider="anthropic",
+                model="claude-test",
+                api_key="secret",
+            )
+            with patch("urllib.request.urlopen", side_effect=self._anthropic_tool_responder(responses)):
+                context = OrchestratorAgent(
+                    product_idea="Collaborative roadmap planner for product teams",
+                    output_root=Path(tmp_dir),
+                    llm_client=llm_client,
+                    node_bin="missing-node",
+                    pytest_bin="missing-pytest",
+                    memory_path=Path(tmp_dir) / "build_memory.json",
+                ).run()
+
+            self.assertTrue(context.testing.passed)
+            self.assertIsNotNone(context.evaluation)
+            self.assertTrue((context.implementation.prototype_dir / "index.html").exists())
 
     def test_publish_failure_does_not_fail_build(self) -> None:
         class FailingPublisher:
