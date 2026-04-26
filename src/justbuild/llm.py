@@ -181,7 +181,16 @@ class LLMClient:
                 "anthropic-version": "2023-06-01",
             }
             endpoint = self.base_url or "https://api.anthropic.com/v1/messages"
-            return self._extract_anthropic_tool_input(self._post_json(endpoint, payload, headers))
+            raw = self._extract_anthropic_tool_input(self._post_json(endpoint, payload, headers))
+            return self._normalize_or_repair_json(
+                raw_text=raw,
+                provider=provider,
+                model=model,
+                prompt=prompt,
+                system_prompt=system_prompt,
+                response_schema=response_schema,
+                base_url=base_url,
+            )
 
         if provider == "gemini":
             self._emit_event("llm_request", "Starting structured provider request", {"provider": provider, "model": model, "structured_output_mode": self._structured_output_mode(provider), "timeout_s": self.timeout_s})
@@ -618,11 +627,12 @@ class LLMClient:
             f"Missing keys: {json.dumps(missing_keys)}\n"
             f"Current JSON:\n{normalized_json}"
         )
-        repaired = self._generate_text_response(
+        repaired = self._generate_schema_completion_response(
             provider=provider,
             model=model,
             prompt=repair_prompt,
             system_prompt=self._augment_system_prompt_for_json(system_prompt),
+            response_schema=response_schema,
             base_url=base_url,
         )
         repaired_normalized = self._normalize_json_text(repaired)
@@ -642,6 +652,75 @@ class LLMClient:
                 f"Incomplete JSON after schema completion repair. Missing keys: {', '.join(remaining_missing)}. Present keys: {present}"
             )
         return repaired_normalized
+
+    def _generate_schema_completion_response(
+        self,
+        provider: str,
+        model: str,
+        prompt: str,
+        system_prompt: str | None,
+        response_schema: dict[str, Any],
+        base_url: str | None,
+    ) -> str:
+        self._emit_event(
+            "schema_completion_request",
+            "Requesting provider-assisted schema completion repair",
+            {"provider": provider, "model": model, "structured_output_mode": self._structured_output_mode(provider)},
+        )
+        if provider == "anthropic":
+            payload = self._build_anthropic_tool_payload(model, prompt, system_prompt, response_schema)
+            headers = {
+                "Content-Type": "application/json",
+                "x-api-key": self.api_key or "",
+                "anthropic-version": "2023-06-01",
+            }
+            endpoint = self.base_url or "https://api.anthropic.com/v1/messages"
+            return self._extract_anthropic_tool_input(self._post_json(endpoint, payload, headers))
+
+        if provider == "openai":
+            return self._generate_openai_response(
+                provider=provider,
+                model=model,
+                prompt=prompt,
+                system_prompt=system_prompt,
+                response_schema=response_schema,
+                base_url=base_url,
+            )
+
+        if provider == "gemini":
+            return self._generate_gemini_response(prompt, system_prompt, response_schema, model, base_url)
+
+        if provider == "openai_compatible":
+            try:
+                return self._generate_openai_response(
+                    provider=provider,
+                    model=model,
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    response_schema=response_schema,
+                    base_url=base_url,
+                )
+            except LLMError:
+                self._emit_event(
+                    "schema_completion_fallback",
+                    "Falling back to best-effort schema completion repair",
+                    {"provider": provider, "model": model},
+                )
+                return self._generate_text_response(
+                    provider=provider,
+                    model=model,
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    base_url=base_url,
+                )
+
+        return self._generate_text_response(
+            provider=provider,
+            model=model,
+            prompt=prompt,
+            system_prompt=system_prompt,
+            base_url=base_url,
+        )
 
     def _emit_event(self, category: str, message: str, metadata: dict[str, Any] | None = None) -> None:
         if self.event_logger is None:

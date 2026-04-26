@@ -496,6 +496,31 @@ class MultiAgentSystemTests(unittest.TestCase):
             self.assertTrue(context.testing.passed)
             self.assertEqual(context.architecture.justification, ["The build remains easy to test and inspect."])
 
+    def test_implementation_missing_files_is_repaired_end_to_end(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            responses = default_responses()
+            llm_client = LLMClient(
+                provider="openai_compatible",
+                local_model="llama3",
+                base_url="http://localhost:11434/v1",
+            )
+            with patch(
+                "urllib.request.urlopen",
+                side_effect=self._openai_compatible_missing_key_then_repair_responder(responses, "files"),
+            ):
+                context = OrchestratorAgent(
+                    product_idea="Collaborative roadmap planner for product teams",
+                    output_root=Path(tmp_dir),
+                    llm_client=llm_client,
+                    node_bin="missing-node",
+                    pytest_bin="missing-pytest",
+                    memory_path=Path(tmp_dir) / "build_memory.json",
+                ).run()
+
+            self.assertTrue(context.testing.passed)
+            generated_names = {path.name for path in context.implementation.generated_files}
+            self.assertEqual(generated_names, {"index.html", "styles.css", "app.js", "README.md"})
+
     def test_planning_refinement_with_architecture_retry_reaches_implementation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             context = OrchestratorAgent(

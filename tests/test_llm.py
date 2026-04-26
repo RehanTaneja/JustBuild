@@ -130,6 +130,48 @@ class LLMClientTests(unittest.TestCase):
 
         self.assertEqual(json.loads(response), {"summary": "done", "justification": []})
 
+    def test_anthropic_missing_required_key_uses_structured_schema_completion_repair(self) -> None:
+        client = LLMClient(provider="anthropic", model="claude-test", api_key="secret")
+        first = FakeHTTPResponse(
+            {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "justbuild_response",
+                        "input": {"notes": ["generated"]},
+                    }
+                ]
+            }
+        )
+        repaired = FakeHTTPResponse(
+            {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "justbuild_response",
+                        "input": {
+                            "notes": ["generated"],
+                            "files": {
+                                "index.html": "<html></html>",
+                                "styles.css": ":root {}",
+                                "app.js": "const msg = 'Generated Response';",
+                                "README.md": "# Prototype",
+                            },
+                        },
+                    }
+                ]
+            }
+        )
+        schema = {"type": "object", "required": ["notes", "files"]}
+        with patch("urllib.request.urlopen", side_effect=[first, repaired]) as mocked:
+            response = client.generate("hello", response_schema=schema)
+
+        parsed = json.loads(response)
+        self.assertIn("files", parsed)
+        second_payload = json.loads(mocked.call_args_list[1].args[0].data.decode("utf-8"))
+        self.assertEqual(second_payload["tool_choice"], {"type": "tool", "name": "justbuild_response"})
+        self.assertEqual(second_payload["tools"][0]["input_schema"], schema)
+
     def test_repeated_incomplete_json_fails_after_schema_completion_repair(self) -> None:
         client = LLMClient(provider="openai_compatible", local_model="llama3", base_url="http://localhost:11434/v1")
         incomplete = FakeHTTPResponse({"choices": [{"message": {"content": '{"summary":"done"}'}}]})
