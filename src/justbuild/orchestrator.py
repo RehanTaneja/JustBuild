@@ -31,6 +31,10 @@ This is the brain or the pipeline manager. It:
 """
 
 
+class NodeContractError(RuntimeError):
+    """Raised when a workflow node is activated without the upstream artifacts it requires."""
+
+
 class OrchestratorAgent:
     name = "orchestrator-agent"
 
@@ -175,7 +179,7 @@ class OrchestratorAgent:
                 node_id="architecture_review",
                 node_type="agent",
                 handler=self._handle_architecture_review,
-                dependencies=["specification"],
+                dependencies=["architecture_plan"],
                 retry_policy=RetryPolicy(max_attempts=2),
             ),
             "planning_refinement_gate": WorkflowNode(
@@ -298,9 +302,10 @@ class OrchestratorAgent:
 
     def _handle_architecture_plan(self, state: ExecutionState, node: WorkflowNode, attempt: int) -> NodeResult:
         self._mark_milestone_start("Architecture", attempt)
-        specification = self.context.specification
-        if specification is None:
-            raise ValueError("Specification is required before architecture planning.")
+        specification = self._require_context_artifacts(
+            "architecture_plan",
+            specification=self.context.specification,
+        )["specification"]
         plan = self.architecture_agent.generate_plan(specification, iteration=attempt, emit_logs=False)
         self.context.architecture = plan
         self.logger.log(
@@ -315,10 +320,17 @@ class OrchestratorAgent:
 
     def _handle_architecture_review(self, state: ExecutionState, node: WorkflowNode, attempt: int) -> NodeResult:
         self._mark_milestone_start("Architecture", attempt)
-        specification = self.context.specification
-        if specification is None:
-            raise ValueError("Specification is required before architecture review.")
-        review = self.architecture_agent.review_plan(specification, architecture=None, iteration=attempt, emit_logs=False)
+        required = self._require_context_artifacts(
+            "architecture_review",
+            specification=self.context.specification,
+            architecture=self.context.architecture,
+        )
+        review = self.architecture_agent.review_plan(
+            required["specification"],
+            architecture=required["architecture"],
+            iteration=attempt,
+            emit_logs=False,
+        )
         self.context.architecture_review = review
         self.logger.log(
             self.architecture_agent.name,
@@ -331,6 +343,11 @@ class OrchestratorAgent:
         return NodeResult(activate_nodes=["planning_refinement_gate"])
 
     def _handle_planning_refinement_gate(self, state: ExecutionState, node: WorkflowNode, attempt: int) -> NodeResult:
+        self._require_context_artifacts(
+            "planning_refinement_gate",
+            architecture=self.context.architecture,
+            architecture_review=self.context.architecture_review,
+        )
         issues = self._detect_architecture_issues()
         if issues:
             self.context.iterations.append({"iteration": "planning-refinement", "events": issues})
@@ -349,6 +366,11 @@ class OrchestratorAgent:
     def _handle_implementation(self, state: ExecutionState, node: WorkflowNode, attempt: int) -> NodeResult:
         cycle = int(state.data.get("implementation_cycle", 1))
         self._mark_milestone_start("Implementation", cycle)
+        self._require_context_artifacts(
+            "implementation",
+            specification=self.context.specification,
+            architecture=self.context.architecture,
+        )
         failure_reports = state.data.get("failure_reports") or []
         fix_plan = state.data.get("fix_plan")
         implementation = self.implementation_agent.run(
@@ -363,6 +385,10 @@ class OrchestratorAgent:
     def _handle_testing(self, state: ExecutionState, node: WorkflowNode, attempt: int) -> NodeResult:
         cycle = int(state.data.get("implementation_cycle", 1))
         self._mark_milestone_start("Testing", cycle)
+        self._require_context_artifacts(
+            "testing",
+            implementation=self.context.implementation,
+        )
         test_result = self.testing_agent.run(iteration=cycle)
         self._record_iteration_event(cycle, "testing", asdict(test_result))
         if test_result.passed:
@@ -378,6 +404,10 @@ class OrchestratorAgent:
     def _handle_debugging(self, state: ExecutionState, node: WorkflowNode, attempt: int) -> NodeResult:
         cycle = int(state.data.get("implementation_cycle", 1))
         self._mark_milestone_start("Debugging", cycle)
+        self._require_context_artifacts(
+            "debugging",
+            testing=self.context.testing,
+        )
         failure_reports = state.data.get("failure_reports") or []
         fix_plan = self.debugging_agent.run(iteration=cycle, failure_reports=failure_reports)
         state.data["fix_plan"] = fix_plan
@@ -401,6 +431,12 @@ class OrchestratorAgent:
         )
 
     def _handle_evaluation_quality(self, state: ExecutionState, node: WorkflowNode, attempt: int) -> NodeResult:
+        self._require_context_artifacts(
+            "evaluation_quality",
+            specification=self.context.specification,
+            architecture=self.context.architecture,
+            testing=self.context.testing,
+        )
         state.data["evaluation_quality"] = self.evaluation_agent.generate_draft(
             "quality",
             ["code_quality", "maintainability"],
@@ -421,6 +457,12 @@ class OrchestratorAgent:
         return NodeResult(activate_nodes=["evaluation_merge"])
 
     def _handle_evaluation_risk(self, state: ExecutionState, node: WorkflowNode, attempt: int) -> NodeResult:
+        self._require_context_artifacts(
+            "evaluation_risk",
+            specification=self.context.specification,
+            architecture=self.context.architecture,
+            testing=self.context.testing,
+        )
         state.data["evaluation_risk"] = self.evaluation_agent.generate_draft(
             "risk",
             ["scalability_risks", "technical_debt", "risk_assessment"],
@@ -441,6 +483,12 @@ class OrchestratorAgent:
         return NodeResult(activate_nodes=["evaluation_merge"])
 
     def _handle_evaluation_security(self, state: ExecutionState, node: WorkflowNode, attempt: int) -> NodeResult:
+        self._require_context_artifacts(
+            "evaluation_security",
+            specification=self.context.specification,
+            architecture=self.context.architecture,
+            testing=self.context.testing,
+        )
         state.data["evaluation_security"] = self.evaluation_agent.generate_draft(
             "security",
             ["security_concerns", "refactoring_opportunities"],
@@ -462,6 +510,12 @@ class OrchestratorAgent:
 
     def _handle_evaluation_merge(self, state: ExecutionState, node: WorkflowNode, attempt: int) -> NodeResult:
         self._mark_milestone_start("Evaluation", attempt)
+        self._require_context_artifacts(
+            "evaluation_merge",
+            evaluation_quality=state.data.get("evaluation_quality"),
+            evaluation_risk=state.data.get("evaluation_risk"),
+            evaluation_security=state.data.get("evaluation_security"),
+        )
         self.context.evaluation = self.evaluation_agent.merge_drafts(
             [
                 state.data["evaluation_quality"],
@@ -473,6 +527,12 @@ class OrchestratorAgent:
         return NodeResult(activate_nodes=["persist_outputs"])
 
     def _handle_persist_outputs(self, state: ExecutionState, node: WorkflowNode, attempt: int) -> NodeResult:
+        self._require_context_artifacts(
+            "persist_outputs",
+            implementation=self.context.implementation,
+            testing=self.context.testing,
+            evaluation=self.context.evaluation,
+        )
         update_build_memory(self.context)
         write_partial_summary(self.context)
         write_build_summary(self.context)
@@ -538,6 +598,14 @@ class OrchestratorAgent:
 
     def _emit_llm_event(self, category: str, message: str, metadata: dict[str, object]) -> None:
         self.logger.emit_event(category=category, message=message, metadata=metadata, agent="llm")
+
+    def _require_context_artifacts(self, node_name: str, **artifacts: object) -> dict[str, object]:
+        missing = [name for name, value in artifacts.items() if value is None]
+        if missing:
+            raise NodeContractError(
+                f"Node handoff error in {node_name}: missing required upstream artifacts: {', '.join(missing)}"
+            )
+        return artifacts
 
     def _evaluation_ready(self, context: BuildContext, state: ExecutionState) -> bool:
         return context.testing is not None

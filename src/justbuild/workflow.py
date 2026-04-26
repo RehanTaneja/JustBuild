@@ -196,11 +196,14 @@ class WorkflowRuntime:
                         continue
                     state.node_statuses[node_id] = NodeStatus.FAILED
                     self._update_milestone_failure(context, graph.nodes[node_id].milestone_name, payload["exception"])
+                    error_type = payload.get("error_type") or "workflow_node_failure"
+                    if error_type == "NodeContractError":
+                        error_type = "node_contract"
                     context.last_failure = {
                         "failed_node": node_id,
                         "attempt": record.attempt,
                         "error": payload["exception"],
-                        "error_type": "workflow_node_failure",
+                        "error_type": error_type,
                     }
                     self._emit("workflow_failure", f"Failed {node_id}", {"node_id": node_id, "attempt": record.attempt, "error": payload["exception"]})
                     write_partial_summary(context)
@@ -252,9 +255,11 @@ class WorkflowRuntime:
             try:
                 node_result = node.handler(state, node, attempt)
                 error = None
+                error_type = None
             except Exception as exc:  # pragma: no cover - exercised by runtime tests/orchestrator failures
                 node_result = None
                 error = str(exc)
+                error_type = type(exc).__name__
             elapsed_ms = int((time.perf_counter() - started) * 1000)
             record = NodeExecutionRecord(
                 node_id=node.node_id,
@@ -264,9 +269,12 @@ class WorkflowRuntime:
                 elapsed_ms=elapsed_ms,
                 routed_to=list(node_result.activate_nodes if node_result else []),
                 error=error,
-                metadata=dict(node_result.metadata if node_result else {}),
+                metadata={
+                    **dict(node_result.metadata if node_result else {}),
+                    **({"error_type": error_type} if error_type else {}),
+                },
             )
-            return {"node_result": node_result, "record": record, "exception": error}
+            return {"node_result": node_result, "record": record, "exception": error, "error_type": error_type}
 
         return task
 

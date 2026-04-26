@@ -9,11 +9,12 @@ from unittest.mock import patch
 from justbuild.agents.base import AgentDependencies
 from justbuild.agents.debugging import DebuggingAgent
 from justbuild.llm import LLMClient
-from justbuild.models import BuildContext, BuildRequest, FailureReport, GitHubPublishResult
+from justbuild.models import BuildContext, BuildRequest, EvaluationReport, FailureReport, GitHubPublishResult, ImplementationArtifacts, TestResult
 from justbuild.observability import BuildLogger
-from justbuild.orchestrator import OrchestratorAgent
+from justbuild.orchestrator import NodeContractError, OrchestratorAgent
 from justbuild.publishing import GitHubPublishError
-from justbuild.workflow import ExecutionState
+from justbuild.validation import parse_architecture_plan, parse_product_specification
+from justbuild.workflow import ExecutionState, WorkflowGraph
 from tests.support import FakeLLMClient, debugging_response, default_responses
 
 """
@@ -146,6 +147,24 @@ class MultiAgentSystemTests(unittest.TestCase):
                 base["architecture_review"],
             ],
         }
+
+    def _make_orchestrator(self, tmp_dir: str, responses=None) -> OrchestratorAgent:
+        return OrchestratorAgent(
+            product_idea="Simple task tracker web app",
+            output_root=Path(tmp_dir),
+            llm_client=FakeLLMClient(responses=responses or default_responses()),
+            node_bin="missing-node",
+            pytest_bin="missing-pytest",
+            memory_path=Path(tmp_dir) / "build_memory.json",
+        )
+
+    def _dummy_state(self, orchestrator: OrchestratorAgent) -> ExecutionState:
+        return ExecutionState(context=orchestrator.context, graph=WorkflowGraph(nodes={}, entry_nodes=[]), max_workers=1)
+
+    def _seed_spec_and_architecture(self, orchestrator: OrchestratorAgent) -> None:
+        base = default_responses()
+        orchestrator.context.specification = parse_product_specification(base["specification"])
+        orchestrator.context.architecture = parse_architecture_plan(base["architecture_plan"])
 
     # Main pipeline test
     def test_end_to_end_build_generates_prototype_and_summary(self) -> None:
@@ -503,6 +522,113 @@ class MultiAgentSystemTests(unittest.TestCase):
             architecture_runs = [run for run in context.node_runs if run.node_id == "architecture_plan"]
             self.assertTrue(any(run.status == "failed" for run in architecture_runs))
             self.assertEqual(architecture_runs[-1].status, "completed")
+
+    def test_architecture_review_receives_generated_architecture_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake_llm = FakeLLMClient(responses=default_responses())
+            context = OrchestratorAgent(
+                product_idea="Simple task tracker web app",
+                output_root=Path(tmp_dir),
+                llm_client=fake_llm,
+                node_bin="missing-node",
+                pytest_bin="missing-pytest",
+                memory_path=Path(tmp_dir) / "build_memory.json",
+            ).run()
+
+            self.assertTrue(context.testing.passed)
+            review_prompts = [
+                prompt
+                for system_prompt, prompt in fake_llm.prompt_history
+                if system_prompt and "architecture review agent" in system_prompt.lower()
+            ]
+            self.assertEqual(len(review_prompts), 1)
+            self.assertIn("Layered orchestration that generates a browser prototype.", review_prompts[0])
+            self.assertNotIn("Architecture: null", review_prompts[0])
+            self.assertFalse(any("No architecture document provided" in finding for finding in context.architecture_review.findings))
+
+    def test_simple_task_tracker_planning_completes_once_with_valid_review_handoff(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            context = self._make_orchestrator(tmp_dir).run()
+            specification_runs = [run for run in context.node_runs if run.node_id == "specification"]
+            planning_gate_runs = [run for run in context.node_runs if run.node_id == "planning_refinement_gate"]
+            self.assertEqual(len(specification_runs), 1)
+            self.assertEqual(len(planning_gate_runs), 1)
+            self.assertEqual(context.workflow_terminal_state, "completed")
+            self.assertTrue(context.testing.passed)
+
+    def test_architecture_review_contract_failure_happens_before_llm_call(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake_llm = FakeLLMClient(responses=default_responses())
+            orchestrator = OrchestratorAgent(
+                product_idea="Simple task tracker web app",
+                output_root=Path(tmp_dir),
+                llm_client=fake_llm,
+                node_bin="missing-node",
+                pytest_bin="missing-pytest",
+                memory_path=Path(tmp_dir) / "build_memory.json",
+            )
+            base = default_responses()
+            orchestrator.context.specification = parse_product_specification(base["specification"])
+            with self.assertRaisesRegex(NodeContractError, "Node handoff error in architecture_review"):
+                orchestrator._handle_architecture_review(self._dummy_state(orchestrator), None, 1)
+            self.assertEqual(fake_llm.prompt_history, [])
+
+    def test_implementation_contract_failure_happens_before_llm_call(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake_llm = FakeLLMClient(responses=default_responses())
+            orchestrator = OrchestratorAgent(
+                product_idea="Simple task tracker web app",
+                output_root=Path(tmp_dir),
+                llm_client=fake_llm,
+                node_bin="missing-node",
+                pytest_bin="missing-pytest",
+                memory_path=Path(tmp_dir) / "build_memory.json",
+            )
+            base = default_responses()
+            orchestrator.context.specification = parse_product_specification(base["specification"])
+            state = self._dummy_state(orchestrator)
+            state.data["implementation_cycle"] = 1
+            with self.assertRaisesRegex(NodeContractError, "Node handoff error in implementation"):
+                orchestrator._handle_implementation(state, None, 1)
+            self.assertEqual(fake_llm.prompt_history, [])
+
+    def test_testing_contract_failure_happens_before_llm_call(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake_llm = FakeLLMClient(responses=default_responses())
+            orchestrator = OrchestratorAgent(
+                product_idea="Simple task tracker web app",
+                output_root=Path(tmp_dir),
+                llm_client=fake_llm,
+                node_bin="missing-node",
+                pytest_bin="missing-pytest",
+                memory_path=Path(tmp_dir) / "build_memory.json",
+            )
+            self._seed_spec_and_architecture(orchestrator)
+            state = self._dummy_state(orchestrator)
+            state.data["implementation_cycle"] = 1
+            with self.assertRaisesRegex(NodeContractError, "Node handoff error in testing"):
+                orchestrator._handle_testing(state, None, 1)
+            self.assertEqual(fake_llm.prompt_history, [])
+
+    def test_persist_outputs_contract_failure_happens_before_extra_work(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            orchestrator = self._make_orchestrator(tmp_dir)
+            self._seed_spec_and_architecture(orchestrator)
+            orchestrator.context.implementation = ImplementationArtifacts(
+                prototype_dir=Path(tmp_dir) / "prototype",
+                generated_files=[],
+                notes=[],
+                file_bundle={},
+            )
+            orchestrator.context.testing = TestResult(
+                passed=True,
+                summary="ok",
+                unit_results=[],
+                integration_results=[],
+            )
+            with self.assertRaisesRegex(NodeContractError, "Node handoff error in persist_outputs"):
+                orchestrator._handle_persist_outputs(self._dummy_state(orchestrator), None, 1)
+
 
     def test_runtime_integrity_failure_is_persisted_for_lost_activation(self) -> None:
         original_enqueue = ExecutionState.enqueue
