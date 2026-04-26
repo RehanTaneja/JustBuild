@@ -29,7 +29,11 @@ class BuildRequest:
     llm_model: str | None = None
     llm_base_url: str | None = None
     llm_backend_type: str | None = None
+    llm_backend_family: str | None = None
     llm_structured_output_mode: str | None = None
+    llm_capabilities_probed: bool = False
+    llm_capability_source: str | None = None
+    llm_capability_downgrade: str | None = None
     llm_timeout_s: int = 60
     log_mode: str = "progress"
     enable_playwright: bool = False

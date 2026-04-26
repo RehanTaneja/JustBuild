@@ -103,7 +103,11 @@ def main(argv: list[str] | None = None) -> int:
             "model": context.request.llm_model,
             "base_url": context.request.llm_base_url,
             "backend_type": context.request.llm_backend_type,
+            "backend_family": context.request.llm_backend_family,
             "structured_output_mode": context.request.llm_structured_output_mode,
+            "capabilities_probed": context.request.llm_capabilities_probed,
+            "capability_source": context.request.llm_capability_source,
+            "capability_downgrade": context.request.llm_capability_downgrade,
             "timeout_s": context.request.llm_timeout_s,
         },
         "testing_backend": {

@@ -77,7 +77,11 @@ class OrchestratorAgent:
             llm_model=backend.model,
             llm_base_url=backend.base_url,
             llm_backend_type=backend.backend_type,
+            llm_backend_family=backend.backend_family,
             llm_structured_output_mode=backend.structured_output_mode,
+            llm_capabilities_probed=backend.capabilities_probed,
+            llm_capability_source=backend.capability_source,
+            llm_capability_downgrade=backend.capability_downgrade,
             llm_timeout_s=timeout_s,
             log_mode=log_mode,
             enable_playwright=enable_playwright,
@@ -606,6 +610,21 @@ class OrchestratorAgent:
         return NodeResult(terminal_state=TerminalState.COMPLETED)
 
     def _emit_llm_event(self, category: str, message: str, metadata: dict[str, object]) -> None:
+        backend_family = metadata.get("backend_family")
+        if isinstance(backend_family, str):
+            self.context.request.llm_backend_family = backend_family
+        structured_output_mode = metadata.get("structured_output_mode")
+        if isinstance(structured_output_mode, str):
+            self.context.request.llm_structured_output_mode = structured_output_mode
+        capabilities_probed = metadata.get("capabilities_probed")
+        if isinstance(capabilities_probed, bool):
+            self.context.request.llm_capabilities_probed = capabilities_probed
+        capability_source = metadata.get("capability_source")
+        if isinstance(capability_source, str):
+            self.context.request.llm_capability_source = capability_source
+        capability_downgrade = metadata.get("capability_downgrade")
+        if isinstance(capability_downgrade, str):
+            self.context.request.llm_capability_downgrade = capability_downgrade
         self.logger.emit_event(category=category, message=message, metadata=metadata, agent="llm")
 
     def _require_context_artifacts(self, node_name: str, **artifacts: object) -> dict[str, object]:

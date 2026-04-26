@@ -37,7 +37,23 @@ class LLMBackendInfo:
     model: str | None
     base_url: str | None
     backend_type: str
+    backend_family: str | None = None
     structured_output_mode: str | None = None
+    capabilities_probed: bool = False
+    capability_source: str | None = None
+    capability_downgrade: str | None = None
+
+
+@dataclass(slots=True)
+class _BackendCapabilities:
+    backend_family: str
+    supports_chat_completions: bool = True
+    supports_json_schema: bool | None = None
+    supports_tool_calling: bool | None = None
+    structured_strategy: str = "best_effort_schema"
+    probed: bool = False
+    capability_source: str = "inferred"
+    last_downgrade: str | None = None
 
 
 class LLMClient:
@@ -58,6 +74,7 @@ class LLMClient:
         self.base_url = base_url
         self.timeout_s = timeout_s
         self.event_logger = event_logger
+        self._capability_cache: dict[str, _BackendCapabilities] = {}
 
     @property
     def backend_info(self) -> LLMBackendInfo:
@@ -67,15 +84,23 @@ class LLMClient:
                 model=self.model,
                 base_url=self.base_url,
                 backend_type="cloud",
+                backend_family=self.provider,
                 structured_output_mode=self._structured_output_mode(self.provider),
+                capabilities_probed=False,
+                capability_source="static",
             )
         if self.local_model and self.base_url:
+            capabilities = self._get_openai_compatible_capabilities(self.base_url, self.local_model)
             return LLMBackendInfo(
                 provider=self.provider or "openai_compatible",
                 model=self.local_model,
                 base_url=self.base_url,
                 backend_type="local",
-                structured_output_mode=self._structured_output_mode(self.provider or "openai_compatible"),
+                backend_family=capabilities.backend_family,
+                structured_output_mode=capabilities.structured_strategy,
+                capabilities_probed=capabilities.probed,
+                capability_source=capabilities.capability_source,
+                capability_downgrade=capabilities.last_downgrade,
             )
         raise LLMConfigurationError("No LLM backend configured")
 
@@ -139,38 +164,13 @@ class LLMClient:
             )
 
         if provider == "openai_compatible":
-            try:
-                self._emit_event("llm_request", "Starting structured provider request", {"provider": provider, "model": model, "structured_output_mode": self._structured_output_mode(provider), "timeout_s": self.timeout_s})
-                raw = self._generate_openai_response(
-                    provider=provider,
-                    model=model,
-                    prompt=prompt,
-                    system_prompt=system_prompt,
-                    response_schema=response_schema,
-                    base_url=base_url,
-                )
-            except LLMError:
-                self._emit_event("llm_fallback", "Falling back from strict schema to best-effort structured output", {"provider": provider, "model": model})
-                return self._generate_best_effort_json(
-                    provider=provider,
-                    model=model,
-                    prompt=prompt,
-                    system_prompt=system_prompt,
-                    response_schema=response_schema,
-                    base_url=base_url,
-                )
-            try:
-                return self._normalize_or_repair_json(
-                    raw_text=raw,
-                    provider=provider,
-                    model=model,
-                    prompt=prompt,
-                    system_prompt=system_prompt,
-                    response_schema=response_schema,
-                    base_url=base_url,
-                )
-            except LLMResponseError:
-                raise
+            return self._generate_openai_compatible_structured_response(
+                model=model,
+                prompt=prompt,
+                system_prompt=system_prompt,
+                response_schema=response_schema,
+                base_url=base_url,
+            )
 
         if provider == "anthropic":
             self._emit_event("llm_request", "Starting structured provider request", {"provider": provider, "model": model, "structured_output_mode": self._structured_output_mode(provider), "timeout_s": self.timeout_s})
@@ -283,6 +283,22 @@ class LLMClient:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return self._extract_openai_text(self._post_json(endpoint, payload, headers))
 
+    def _generate_openai_tool_response(
+        self,
+        provider: str,
+        model: str,
+        prompt: str,
+        system_prompt: str | None,
+        response_schema: dict[str, Any],
+        base_url: str | None,
+    ) -> str:
+        payload = self._build_openai_tool_payload(model, prompt, system_prompt, response_schema)
+        endpoint = self._openai_endpoint(provider, base_url)
+        headers = {"Content-Type": "application/json"}
+        if provider == "openai":
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return self._extract_openai_tool_input(self._post_json(endpoint, payload, headers))
+
     def _generate_gemini_response(
         self,
         prompt: str,
@@ -375,6 +391,27 @@ class LLMClient:
         payload["tool_choice"] = {"type": "tool", "name": "justbuild_response"}
         return payload
 
+    def _build_openai_tool_payload(
+        self,
+        model: str,
+        prompt: str,
+        system_prompt: str | None,
+        response_schema: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = self._build_openai_payload(model, prompt, system_prompt, None)
+        payload["tools"] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "justbuild_response",
+                    "description": "Return the final response as a JSON object that matches the requested schema.",
+                    "parameters": response_schema,
+                },
+            }
+        ]
+        payload["tool_choice"] = {"type": "function", "function": {"name": "justbuild_response"}}
+        return payload
+
     def _build_gemini_payload(
         self,
         prompt: str,
@@ -426,6 +463,22 @@ class LLMClient:
                 raise LLMResponseError("Anthropic tool response did not include a JSON object input")
         raise LLMResponseError("Anthropic response did not include the forced structured-output tool result")
 
+    def _extract_openai_tool_input(self, payload: dict[str, Any]) -> str:
+        try:
+            choice = payload["choices"][0]["message"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise LLMResponseError("OpenAI-compatible tool response did not include choices[0].message") from exc
+        tool_calls = choice.get("tool_calls")
+        if isinstance(tool_calls, list) and tool_calls:
+            function = tool_calls[0].get("function") if isinstance(tool_calls[0], dict) else None
+            arguments = function.get("arguments") if isinstance(function, dict) else None
+            if isinstance(arguments, str) and arguments.strip():
+                return arguments
+        content = choice.get("content")
+        if isinstance(content, str) and content.strip():
+            return content
+        raise LLMResponseError("OpenAI-compatible tool response did not include tool call arguments")
+
     def _extract_gemini_text(self, payload: dict[str, Any]) -> str:
         try:
             candidates = payload["candidates"][0]["content"]["parts"]
@@ -456,8 +509,220 @@ class LLMClient:
         if provider in {"openai", "gemini"}:
             return "strict_schema"
         if provider == "openai_compatible":
+            if self.base_url and self.local_model:
+                return self._get_openai_compatible_capabilities(self.base_url, self.local_model).structured_strategy
             return "best_effort_schema"
         return "unknown"
+
+    def _generate_openai_compatible_structured_response(
+        self,
+        model: str,
+        prompt: str,
+        system_prompt: str | None,
+        response_schema: dict[str, Any],
+        base_url: str | None,
+    ) -> str:
+        if base_url is None:
+            raise LLMConfigurationError("OpenAI-compatible local endpoints require base_url")
+        raw = self._generate_openai_compatible_structured_raw_response(
+            model=model,
+            prompt=prompt,
+            system_prompt=system_prompt,
+            response_schema=response_schema,
+            base_url=base_url,
+        )
+        return self._normalize_or_repair_json(
+            raw_text=raw,
+            provider="openai_compatible",
+            model=model,
+            prompt=prompt,
+            system_prompt=system_prompt,
+            response_schema=response_schema,
+            base_url=base_url,
+        )
+
+    def _generate_openai_compatible_structured_raw_response(
+        self,
+        model: str,
+        prompt: str,
+        system_prompt: str | None,
+        response_schema: dict[str, Any],
+        base_url: str | None,
+    ) -> str:
+        if base_url is None:
+            raise LLMConfigurationError("OpenAI-compatible local endpoints require base_url")
+        capabilities = self._get_openai_compatible_capabilities(base_url, model)
+        strategies = self._strategy_candidates(capabilities)
+        last_error: LLMError | None = None
+        for index, strategy in enumerate(strategies):
+            capabilities.structured_strategy = strategy
+            self._emit_event(
+                "llm_request",
+                "Starting structured provider request",
+                {
+                    "provider": "openai_compatible",
+                    "model": model,
+                    "structured_output_mode": strategy,
+                    "timeout_s": self.timeout_s,
+                    "backend_family": capabilities.backend_family,
+                    "capabilities_probed": capabilities.probed,
+                    "capability_source": capabilities.capability_source,
+                },
+            )
+            try:
+                if strategy == "tool_schema":
+                    return self._generate_openai_tool_response(
+                        provider="openai_compatible",
+                        model=model,
+                        prompt=prompt,
+                        system_prompt=system_prompt,
+                        response_schema=response_schema,
+                        base_url=base_url,
+                    )
+                elif strategy == "strict_schema":
+                    return self._generate_openai_response(
+                        provider="openai_compatible",
+                        model=model,
+                        prompt=prompt,
+                        system_prompt=system_prompt,
+                        response_schema=response_schema,
+                        base_url=base_url,
+                    )
+                else:
+                    return self._generate_text_response(
+                        provider="openai_compatible",
+                        model=model,
+                        prompt=prompt,
+                        system_prompt=self._augment_system_prompt_for_json(system_prompt),
+                        base_url=base_url,
+                    )
+            except LLMError as exc:
+                last_error = exc
+                if strategy != "best_effort_schema" and self._looks_like_unsupported_feature_error(str(exc)):
+                    next_strategy = strategies[index + 1] if index + 1 < len(strategies) else "best_effort_schema"
+                    self._downgrade_openai_compatible_capability(capabilities, strategy, next_strategy)
+                    continue
+                if strategy != "best_effort_schema" and index + 1 < len(strategies):
+                    raise
+                raise
+
+        if last_error is not None:
+            raise last_error
+        raise LLMResponseError("No structured output strategy succeeded")
+
+    def _get_openai_compatible_capabilities(self, base_url: str, model: str) -> _BackendCapabilities:
+        cache_key = self._capability_cache_key(base_url, model)
+        cached = self._capability_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        capabilities = self._infer_openai_compatible_capabilities(base_url)
+        self._probe_backend_family(base_url, capabilities)
+        self._capability_cache[cache_key] = capabilities
+        return capabilities
+
+    def _capability_cache_key(self, base_url: str, model: str) -> str:
+        return f"{base_url.rstrip('/')}\n{model}"
+
+    def _infer_openai_compatible_capabilities(self, base_url: str) -> _BackendCapabilities:
+        parsed = parse.urlparse(base_url)
+        host = (parsed.hostname or "").lower()
+        port = parsed.port
+        path = parsed.path.rstrip("/").lower()
+        is_ollama_like = (
+            host in {"localhost", "127.0.0.1", "::1"} and port == 11434
+        ) or "ollama" in host or path.endswith("/ollama") or "/ollama/" in path
+        backend_family = "ollama" if is_ollama_like else "openai_compatible"
+        return _BackendCapabilities(
+            backend_family=backend_family,
+            supports_chat_completions=True,
+            supports_json_schema=None,
+            supports_tool_calling=None,
+            structured_strategy="tool_schema" if is_ollama_like else "strict_schema",
+            probed=False,
+            capability_source="inferred",
+        )
+
+    def _probe_backend_family(self, base_url: str, capabilities: _BackendCapabilities) -> None:
+        if capabilities.probed:
+            return
+        if capabilities.backend_family == "ollama":
+            native_root = self._ollama_native_root(base_url)
+            for suffix in ("/api/version", "/api/tags"):
+                if self._get_json(f"{native_root}{suffix}") is not None:
+                    capabilities.probed = True
+                    capabilities.capability_source = "probed"
+                    return
+            capabilities.backend_family = "openai_compatible"
+            capabilities.structured_strategy = "strict_schema"
+        if self._get_json(self._openai_models_endpoint(base_url)) is not None:
+            capabilities.probed = True
+            capabilities.capability_source = "probed"
+            return
+        capabilities.probed = True
+        capabilities.capability_source = "inferred"
+
+    def _strategy_candidates(self, capabilities: _BackendCapabilities) -> list[str]:
+        candidates: list[str] = []
+        if capabilities.supports_tool_calling is not False:
+            candidates.append("tool_schema")
+        if capabilities.supports_json_schema is not False:
+            candidates.append("strict_schema")
+        candidates.append("best_effort_schema")
+        deduped: list[str] = []
+        for candidate in candidates:
+            if candidate not in deduped:
+                deduped.append(candidate)
+        if capabilities.structured_strategy in deduped:
+            deduped.remove(capabilities.structured_strategy)
+            deduped.insert(0, capabilities.structured_strategy)
+        return deduped
+
+    def _downgrade_openai_compatible_capability(
+        self,
+        capabilities: _BackendCapabilities,
+        failed_strategy: str,
+        next_strategy: str,
+    ) -> None:
+        if failed_strategy == "tool_schema":
+            capabilities.supports_tool_calling = False
+        elif failed_strategy == "strict_schema":
+            capabilities.supports_json_schema = False
+        capabilities.structured_strategy = next_strategy
+        capabilities.last_downgrade = f"{failed_strategy}->{next_strategy}"
+        self._emit_event(
+            "llm_capability_downgrade",
+            "Downgrading structured-output strategy after unsupported provider feature",
+            {
+                "provider": "openai_compatible",
+                "structured_output_mode": next_strategy,
+                "backend_family": capabilities.backend_family,
+                "capabilities_probed": capabilities.probed,
+                "capability_source": capabilities.capability_source,
+                "capability_downgrade": capabilities.last_downgrade,
+            },
+        )
+
+    def _ollama_native_root(self, base_url: str) -> str:
+        root = base_url.rstrip("/")
+        if root.endswith("/v1"):
+            return root[:-3]
+        return root
+
+    def _openai_models_endpoint(self, base_url: str) -> str:
+        return base_url.rstrip("/") + "/models"
+
+    def _get_json(self, url: str) -> dict[str, Any] | None:
+        req = request.Request(url, headers={"Accept": "application/json"}, method="GET")
+        try:
+            with request.urlopen(req, timeout=self.timeout_s) as response:
+                text = response.read().decode("utf-8")
+        except (error.HTTPError, error.URLError, TimeoutError):
+            return None
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+        return payload if isinstance(payload, dict) else None
 
     def _augment_system_prompt_for_json(self, system_prompt: str | None) -> str:
         extra = (
@@ -665,7 +930,15 @@ class LLMClient:
         self._emit_event(
             "schema_completion_request",
             "Requesting provider-assisted schema completion repair",
-            {"provider": provider, "model": model, "structured_output_mode": self._structured_output_mode(provider)},
+            {
+                "provider": provider,
+                "model": model,
+                "structured_output_mode": self._structured_output_mode(provider),
+                "backend_family": self.backend_info.backend_family,
+                "capabilities_probed": self.backend_info.capabilities_probed,
+                "capability_source": self.backend_info.capability_source,
+                "capability_downgrade": self.backend_info.capability_downgrade,
+            },
         )
         if provider == "anthropic":
             payload = self._build_anthropic_tool_payload(model, prompt, system_prompt, response_schema)
@@ -691,28 +964,13 @@ class LLMClient:
             return self._generate_gemini_response(prompt, system_prompt, response_schema, model, base_url)
 
         if provider == "openai_compatible":
-            try:
-                return self._generate_openai_response(
-                    provider=provider,
-                    model=model,
-                    prompt=prompt,
-                    system_prompt=system_prompt,
-                    response_schema=response_schema,
-                    base_url=base_url,
-                )
-            except LLMError:
-                self._emit_event(
-                    "schema_completion_fallback",
-                    "Falling back to best-effort schema completion repair",
-                    {"provider": provider, "model": model},
-                )
-                return self._generate_text_response(
-                    provider=provider,
-                    model=model,
-                    prompt=prompt,
-                    system_prompt=system_prompt,
-                    base_url=base_url,
-                )
+            return self._generate_openai_compatible_structured_raw_response(
+                model=model,
+                prompt=prompt,
+                system_prompt=system_prompt,
+                response_schema=response_schema,
+                base_url=base_url,
+            )
 
         return self._generate_text_response(
             provider=provider,
@@ -730,3 +988,19 @@ class LLMClient:
     def _looks_like_model_access_error(self, detail: str) -> bool:
         lowered = detail.lower()
         return "model" in lowered and ("not_found" in lowered or "not found" in lowered or "does not exist" in lowered)
+
+    def _looks_like_unsupported_feature_error(self, detail: str) -> bool:
+        lowered = detail.lower()
+        unsupported_markers = [
+            "unsupported",
+            "not supported",
+            "unknown field",
+            "unknown parameter",
+            "invalid parameter",
+            "tool_choice",
+            "\"tools\"",
+            "response_format",
+            "json_schema",
+            "response format",
+        ]
+        return any(marker in lowered for marker in unsupported_markers)

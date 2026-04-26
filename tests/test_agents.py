@@ -80,6 +80,12 @@ class MultiAgentSystemTests(unittest.TestCase):
 
     def _openai_compatible_responder(self, responses: dict[str, str]):
         def _responder(request_obj, *args, **kwargs):
+            if request_obj.data is None:
+                if request_obj.full_url.endswith("/api/version"):
+                    return self._MockHTTPResponse({"version": "0.6.0"})
+                if request_obj.full_url.endswith("/api/tags"):
+                    return self._MockHTTPResponse({"models": []})
+                return self._MockHTTPResponse({"data": [{"id": "llama3"}]})
             payload = json.loads(request_obj.data.decode("utf-8"))
             key = self._classify_provider_prompt(payload)
             content = f"```json\n{responses[key]}\n```"
@@ -138,6 +144,12 @@ class MultiAgentSystemTests(unittest.TestCase):
         call_count = {"count": 0}
 
         def _responder(request_obj, *args, **kwargs):
+            if request_obj.data is None:
+                if request_obj.full_url.endswith("/api/version"):
+                    return self._MockHTTPResponse({"version": "0.6.0"})
+                if request_obj.full_url.endswith("/api/tags"):
+                    return self._MockHTTPResponse({"models": []})
+                return self._MockHTTPResponse({"data": [{"id": "llama3"}]})
             payload = json.loads(request_obj.data.decode("utf-8"))
             call_count["count"] += 1
             if call_count["count"] == 1:

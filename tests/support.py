@@ -30,7 +30,11 @@ class FakeLLMClient:
                 "model": self.model,
                 "base_url": self.base_url,
                 "backend_type": "local" if self.local_model else "cloud",
+                "backend_family": "openai_compatible" if self.local_model else self.provider,
                 "structured_output_mode": mode,
+                "capabilities_probed": False,
+                "capability_source": "static",
+                "capability_downgrade": None,
             },
         )()
 
