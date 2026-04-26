@@ -117,20 +117,19 @@ class MultiAgentSystemTests(unittest.TestCase):
     def _planning_refinement_responses(self) -> dict[str, object]:
         base = default_responses()
         first_spec = json.loads(base["specification"])
-        first_spec["missing_requirements"] = [
-            "Authentication details still need refinement.",
-            "Prototype data persistence approach is unclear.",
-            "Task filtering behavior needs explicit confirmation.",
-        ]
-        first_architecture = json.loads(base["architecture_plan"])
-        first_architecture["design_tradeoffs"] = [
-            "Favor direct service integrations for the planning draft.",
-        ]
         retry_architecture = json.loads(base["architecture_plan"])
         retry_architecture["database_schema"] = [""]
-        retry_architecture["design_tradeoffs"] = [
-            "Mock APIs keep the prototype fast to iterate.",
-        ]
+        blocking_review = json.dumps(
+            {
+                "prototype_blockers": [
+                    "The architecture does not define a valid persistence model for task records.",
+                ],
+                "retry_guidance": [
+                    "Revise the architecture to include a valid task persistence structure and keep the prototype implementation path simple.",
+                ],
+                "requires_refinement": True,
+            }
+        )
         return {
             **base,
             "specification": [
@@ -138,12 +137,12 @@ class MultiAgentSystemTests(unittest.TestCase):
                 base["specification"],
             ],
             "architecture_plan": [
-                json.dumps(first_architecture),
                 json.dumps(retry_architecture),
+                base["architecture_plan"],
                 base["architecture_plan"],
             ],
             "architecture_review": [
-                base["architecture_review"],
+                blocking_review,
                 base["architecture_review"],
             ],
         }
@@ -544,7 +543,7 @@ class MultiAgentSystemTests(unittest.TestCase):
             self.assertEqual(len(review_prompts), 1)
             self.assertIn("Layered orchestration that generates a browser prototype.", review_prompts[0])
             self.assertNotIn("Architecture: null", review_prompts[0])
-            self.assertFalse(any("No architecture document provided" in finding for finding in context.architecture_review.findings))
+            self.assertEqual(context.architecture_review.prototype_blockers, [])
 
     def test_simple_task_tracker_planning_completes_once_with_valid_review_handoff(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -555,6 +554,31 @@ class MultiAgentSystemTests(unittest.TestCase):
             self.assertEqual(len(planning_gate_runs), 1)
             self.assertEqual(context.workflow_terminal_state, "completed")
             self.assertTrue(context.testing.passed)
+
+    def test_repeated_identical_planning_blockers_fail_clearly(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = default_responses()
+            blocking_review = json.dumps(
+                {
+                    "prototype_blockers": [
+                        "The architecture still lacks a valid persistence model for task records.",
+                    ],
+                    "retry_guidance": [
+                        "Add a concrete persistence approach for task records before implementation.",
+                    ],
+                    "requires_refinement": True,
+                }
+            )
+            responses = {
+                **base,
+                "architecture_review": [
+                    blocking_review,
+                    blocking_review,
+                ],
+            }
+            orchestrator = self._make_orchestrator(tmp_dir, responses=responses)
+            with self.assertRaisesRegex(ValueError, "Planning refinement loop repeated the same prototype blockers"):
+                orchestrator.run()
 
     def test_architecture_review_contract_failure_happens_before_llm_call(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

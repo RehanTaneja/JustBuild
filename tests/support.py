@@ -164,10 +164,8 @@ def default_responses() -> dict[str, str]:
         ),
         "architecture_review": json.dumps(
             {
-                "findings": [
-                    "The architecture cleanly separates orchestration from generation.",
-                ],
-                "recommendations": [],
+                "prototype_blockers": [],
+                "retry_guidance": [],
                 "requires_refinement": False,
             }
         ),

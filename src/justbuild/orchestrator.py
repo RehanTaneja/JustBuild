@@ -350,6 +350,14 @@ class OrchestratorAgent:
         )
         issues = self._detect_architecture_issues()
         if issues:
+            blocker_key = tuple(sorted(issues))
+            blocker_history = state.data.setdefault("planning_blocker_history", [])
+            blocker_history.append(blocker_key)
+            if blocker_history.count(blocker_key) > 1:
+                raise ValueError(
+                    "Planning refinement loop repeated the same prototype blockers without resolution: "
+                    + ", ".join(issues)
+                )
             self.context.iterations.append({"iteration": "planning-refinement", "events": issues})
             state.data["planning_feedback"] = issues
             return NodeResult(
@@ -358,6 +366,7 @@ class OrchestratorAgent:
                 metadata={"issues": issues},
             )
         self._update_milestone("Architecture", TaskStatus.COMPLETED)
+        state.data["planning_blocker_history"] = []
         state.data["implementation_cycle"] = 1
         state.data.setdefault("failure_reports", [])
         state.data.setdefault("fix_plan", None)
@@ -637,22 +646,12 @@ class OrchestratorAgent:
         raise KeyError(f"Unknown milestone: {name}")
 
     def _detect_architecture_issues(self) -> list[str]:
-        specification = self.context.specification
-        architecture = self.context.architecture
         architecture_review = self.context.architecture_review
-        if specification is None or architecture is None:
+        if architecture_review is None:
             return []
-
-        issues: list[str] = []
-        if len(specification.missing_requirements) >= 3:
-            issues.append("High requirement ambiguity detected; narrow scope with explicit prototype assumptions.")
-        if not any("mock" in tradeoff.lower() for tradeoff in architecture.design_tradeoffs):
-            issues.append("Architecture should document how prototype seams avoid premature backend lock-in.")
-        if architecture_review is not None:
-            issues.extend(architecture_review.recommendations)
-            if not architecture_review.requires_refinement:
-                issues = [issue for issue in issues if issue not in architecture_review.recommendations]
-        return issues
+        if not architecture_review.requires_refinement:
+            return []
+        return list(architecture_review.prototype_blockers or architecture_review.retry_guidance)
 
     def _record_iteration_event(self, iteration: int, key: str, value: object) -> None:
         iteration_log = self._ensure_iteration_log(iteration)

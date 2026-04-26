@@ -97,8 +97,8 @@ class ArchitecturePlan:
 
 @dataclass(slots=True)
 class ArchitectureReview:
-    findings: list[str]
-    recommendations: list[str]
+    prototype_blockers: list[str]
+    retry_guidance: list[str]
     requires_refinement: bool
 
 # Separates Spec-> Architecture-> Implementation. This takes the ArchitecturePlan and tracks the actual output of the coding agent.

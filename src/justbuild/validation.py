@@ -104,13 +104,17 @@ def parse_architecture_plan(raw_text: str) -> ArchitecturePlan:
 
 def parse_architecture_review(raw_text: str) -> ArchitectureReview:
     payload = parse_json_object(raw_text)
-    require_keys(payload, ["findings", "recommendations", "requires_refinement"])
+    require_keys(payload, ["prototype_blockers", "retry_guidance", "requires_refinement"])
     requires_refinement = payload["requires_refinement"]
     if not isinstance(requires_refinement, bool):
         raise JSONValidationError("Field 'requires_refinement' must be a boolean")
+    prototype_blockers = normalize_string_list(payload["prototype_blockers"], "prototype_blockers")
+    retry_guidance = normalize_string_list(payload["retry_guidance"], "retry_guidance")
+    if not requires_refinement and (prototype_blockers or retry_guidance):
+        raise JSONValidationError("Non-blocking architecture review must return empty prototype_blockers and retry_guidance")
     return ArchitectureReview(
-        findings=normalize_string_list(payload["findings"], "findings"),
-        recommendations=normalize_string_list(payload["recommendations"], "recommendations"),
+        prototype_blockers=prototype_blockers,
+        retry_guidance=retry_guidance,
         requires_refinement=requires_refinement,
     )
 

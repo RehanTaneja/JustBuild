@@ -70,7 +70,7 @@ DEBUGGING_SCHEMA = {
 
 ARCHITECTURE_REVIEW_SCHEMA = {
     "type": "object",
-    "required": ["findings", "recommendations", "requires_refinement"],
+    "required": ["prototype_blockers", "retry_guidance", "requires_refinement"],
 }
 
 
@@ -94,6 +94,8 @@ def specification_user_prompt(idea: str, architecture_feedback: list[str] | None
         "Return fields: title, product_summary, requirements, features, user_stories, "
         "api_contracts, assumptions, constraints, missing_requirements.\n"
         "Each list field must be an array of strings.\n"
+        "Only include missing_requirements that are unresolved and build-critical for the next implementation pass.\n"
+        "Do not include future enhancements, production hardening, or optional roadmap ideas in missing_requirements.\n"
         "Include every required field even if uncertain.\n"
         "If a list field is uncertain, return an empty array instead of omitting it."
     )
@@ -126,7 +128,8 @@ def architecture_user_prompt(spec: ProductSpecification, memory: BuildMemory | N
 def architecture_review_system_prompt() -> str:
     return (
         "You are the JustBuild architecture review agent. Return valid JSON only. "
-        "Critique the proposed architecture against the product specification. "
+        "Check only for critical or highly problematic issues that would block prototype implementation. "
+        "Do not provide general advice, roadmap suggestions, or production hardening recommendations. "
         "All required keys must be present. Never omit a required key. "
         "Do not rename keys. Output exactly one JSON object."
     )
@@ -143,9 +146,11 @@ def architecture_review_user_prompt(
         f"Specification: {json.dumps(asdict(spec), indent=2)}\n"
         f"Architecture: {json.dumps(asdict(architecture), indent=2) if architecture else 'null'}\n"
         f"{memory_block}"
-        "Return JSON with findings, recommendations, and requires_refinement.\n"
-        "findings and recommendations must be arrays of strings. requires_refinement must be a boolean.\n"
-        "Include every required field even if uncertain. If an array field is uncertain, return an empty array."
+        "Return JSON with prototype_blockers, retry_guidance, and requires_refinement.\n"
+        "prototype_blockers and retry_guidance must be arrays of strings. requires_refinement must be a boolean.\n"
+        "If there are no critical or highly problematic blocker issues, return requires_refinement=false and empty arrays.\n"
+        "Only populate retry_guidance when requires_refinement is true.\n"
+        "Keep the output minimal and blocker-focused. Do not include general recommendations."
     )
 
 

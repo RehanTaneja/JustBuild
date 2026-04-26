@@ -50,7 +50,7 @@ def update_build_memory(context: BuildContext) -> BuildMemory:
     memory = context.memory or BuildMemory()
     title = context.specification.title if context.specification else context.request.product_idea
     build_id = title.lower().replace(" ", "-")
-    architecture_findings = context.architecture_review.findings if context.architecture_review else []
+    architecture_findings = context.architecture_review.prototype_blockers if context.architecture_review else []
     failure_groups = context.debugging.failure_groups if context.debugging else []
     successful_patterns = _extract_successful_patterns(context)
     root_cause = context.debugging.root_cause if context.debugging else None
